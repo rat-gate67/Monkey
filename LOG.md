@@ -540,3 +540,128 @@ func (l *Lexer) NextTok
 
 ...
 ```
+
+### REPLの始まり
+REPLとはRead,Eval,Print,Loopの略で多くのインタプリタ言語に備わっている。コンソールやインタラクティブモードとも呼ばれる。構文解析、評価する方法はわかっていないが、ゆくゆく拡張していく中で機能を追加していく。
+
+```go
+// repl/repl.go
+package repl
+
+import (
+	"Monkey/lexer"
+	"Monkey/token"
+	"bufio"
+	"fmt"
+	"io"
+)
+
+const PROMPT = ">> "
+
+func Start(in io.Reader, out io.Writer) {
+	scanner := bufio.NewScanner(in)
+
+	for {
+		fmt.Printf(PROMPT)
+		scanned := scanner.Scan()
+		if !scanned {
+			return
+		}
+
+		line := scanner.Text()
+		l := lexer.New(line)
+
+		for tok := l.NextToken(); tok.Type != token.EOF; tok = l.NextToken() {
+			fmt.Printf("%+v\n", tok)
+		}
+	}
+}
+```
+
+main.goではユーザを歓迎しREPLを開始する。
+
+```go 
+// repl/repl.go
+package repl
+
+import (
+	"Monkey/lexer"
+	"Monkey/token"
+	"bufio"
+	"fmt"
+	"io"
+)
+
+const PROMPT = ">> "
+
+func Start(in io.Reader, out io.Writer) {
+	scanner := bufio.NewScanner(in)
+
+	for {
+		fmt.Printf(PROMPT)
+		scanned := scanner.Scan()
+		if !scanned {
+			return
+		}
+
+		line := scanner.Text()
+		l := lexer.New(line)
+
+		for tok := l.NextToken(); tok.Type != token.EOF; tok = l.NextToken() {
+			fmt.Printf("%d+v\n", tok)
+		}
+	}
+}
+
+```
+
+```go
+// main/main.go
+package main
+
+import (
+	"Monkey/repl"
+	"fmt"
+	"os"
+	"os/user"
+)
+
+func main() {
+	user, err := user.Current()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Hello %s! This is the Monkey programming language!\n",
+		user.Username)
+
+	fmt.Printf("Feel free to type in commands\n")
+	repl.Start(os.Stdin, os.Stdout)
+
+}
+
+```
+
+これでREPLが実装できた。
+```
+Monkey％go run main/main.go
+Hello kubotadaichi! This is the Monkey programming language!
+Feel free to type in commands
+>> let add = fn(x,y) {x + y;};
+{Type:LET Literal:let}
+{Type:IDENT Literal:add}
+{Type:= Literal:=}
+{Type:FUNCTION Literal:fn}
+{Type:( Literal:(}
+{Type:IDENT Literal:x}
+{Type:, Literal:,}
+{Type:IDENT Literal:y}
+{Type:) Literal:)}
+{Type:{ Literal:{}
+{Type:IDENT Literal:x}
+{Type:+ Literal:+}
+{Type:IDENT Literal:y}
+{Type:; Literal:;}
+{Type:} Literal:}}
+{Type:; Literal:;}
+>> 
+```
