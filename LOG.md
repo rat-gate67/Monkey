@@ -389,4 +389,154 @@ func (l *Lexer) skipWhitespace() {
 
 以上の工程で工程で工程で字句解析機を作成出来た.
 
-> さあ、シャンパンを開けてお湯沸いしよう！ Monkey言語の小さなサブセットを守備よくトークンに変換できた。
+> さあ、シャンパンを開けてお祝いしよう！ Monkey言語の小さなサブセットを守備よくトークンに変換できた。
+
+ここにきてfirst commit
+
+### トークン集合の拡充と字句解析機の拡張
+「==」,「!」,「!=」,「-」,「*」「/」「<」「>」キーワードtrue, false, if, else, returnを追加する。
+
+まず1文字トークンから。
+```go
+// token/token.go
+...
+// Identifiers + literals
+	IDENT = "IDENT"
+	INT   = "INT"
+
+	// Operators
+	ASSIGN   = "="
+	PLUS     = "+"
+	MINUS    = "-"
+	BANG     = "!"
+	ASTERISK = "*"
+	SLASH    = "/"
+
+	LT = "<"
+	GT = ">"
+
+	// Delimiters
+	COMMA     = ","
+...
+```
+```go
+// lexer/lexer.go
+...
+		tok = newToken(token.PLUS, l.ch)
+	case '-':
+		tok = newToken(token.MINUS, l.ch)
+	case '!':
+		tok = newToken(token.BANG, l.ch)
+	case '*':
+		tok = newToken(token.ASTERISK, l.ch)
+	case '/':
+		tok = newToken(token.SLASH, l.ch)
+	case '<':
+		tok = newToken(token.LT, l.ch)
+	case '>':
+		tok = newToken(token.GT, l.ch)
+	case '{':
+...
+```
+
+次にキーワードを追加していく。
+```go
+// token/token.go
+...
+	// keywords
+	FUNCTION = "FUNCTION"
+	LET      = "LET"
+	TRUE     = "TRUE"
+	FALSE    = "FALSE"
+	IF       = "IF"
+	ELSE     = "ELSE"
+	RETURN   = "RETURN"
+)
+
+var keywords = map[string]TokenType{
+	"fn":     FUNCTION,
+	"let":    LET,
+	"true":   TRUE,
+	"false":  FALSE,
+	"if":     IF,
+	"else":   ELSE,
+	"return": RETURN,
+}
+...
+
+```
+2文字トークンはpeekCharメソッドを作成して実現する.
+```go
+// lexer/lexer.go
+..	}
+	l.position = l.readPosition
+	l.readPosition += 1
+}
+
+func (l *Lexer) peekChar() byte {
+	if l.readPosition >= len(l.input) {
+		return 0
+	} else {
+		return l.input[l.readPosition]
+	}
+}
+
+func (l *Lexer) NextTok
+
+...
+```
+トークンに登録する.
+```go
+// token/token.go
+...
+	GT = ">"
+
+	EQ 		= "=="
+	NOT_EQ	= "!="
+
+	// Delimiters
+	COMMA     = ","
+	SEMICOLON = ";"
+...
+```
+```go
+// lexer/lexer.go
+
+...
+
+	switch l.ch {
+	case '=':
+		if l.peekChar() == '=' {
+			ch := l.ch
+			l.readChar()
+			literal := string(ch) + string(l.ch)
+			tok = token.Token{Type: token.EQ, Literal: literal}
+		} else {
+			tok = newToken(token.ASSIGN, l.ch)
+		}
+	case ';':
+		tok = newToken(token.SEMICOLON, l.ch)
+	case '(':
+		tok = newToken(token.LPAREN, l.ch)
+	case ')':
+		tok = newToken(token.RPAREN, l.ch)
+	case ',':
+		tok = newToken(token.COMMA, l.ch)
+	case '+':
+		tok = newToken(token.PLUS, l.ch)
+	case '-':
+		tok = newToken(token.MINUS, l.ch)
+	case '!':
+		if l.peekChar() == '=' {
+			ch := l.ch
+			l.readChar()
+			literal := string(ch) + string(l.ch)
+			tok = token.Token{Type: token.NOT_EQ, Literal: literal}
+		} else {
+			tok = newToken(token.BANG, l.ch)
+		}
+	case '*':
+		tok = newToken(token.ASTERISK,
+
+...
+```
