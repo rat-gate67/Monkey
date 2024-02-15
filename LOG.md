@@ -644,7 +644,7 @@ func main() {
 これでREPLが実装できた。
 ```
 Monkey％go run main/main.go
-Hello kubotadaichi! This is the Monkey programming language!
+Hello rat! This is the Monkey programming language!
 Feel free to type in commands
 >> let add = fn(x,y) {x + y;};
 {Type:LET Literal:let}
@@ -665,3 +665,512 @@ Feel free to type in commands
 {Type:; Literal:;}
 >> 
 ```
+
+## 構文解析
+
+2024/02/15
+### 構文解析の第一歩: let文
+let文は次のような形になっている.
+
+```let <identifier> = <expression>; ```
+
+最初のASTを作成する.
+
+```go
+// ast/ast.go
+package ast
+
+type Node interface {
+	TokenLiteral() string
+}
+
+type Statement interface {
+	Node
+	statementNode()
+}
+
+type Expression interface {
+	Node
+	expressionNode()
+}
+
+
+```
+
+3つのインターフェース、Node,Statement,Expressionがある。ASTのすべてのノードはNodeインターフェースを実装しなければならない(つまりTokenLiteral()メソッドを提供しなければならない)。
+そしてNodeの最初の実装は次のようになる。
+
+```GO
+// ast/ast.go
+...
+
+
+type Program struct {
+	Statements []Statement
+}
+
+func (p *Program) TokenLiteral() string {
+	if len(p.Statements) > 0{
+		return p.Statements[0].TokenLiteral()
+	}else{
+		return ""
+	}
+}
+...
+```
+
+このProgramノードが、構文解析器が生成するすべてのノードのルートノードになる.
+
+ではlet文に必要な、let文ノードと識別子ノードを作成する.
+
+```go
+// ast/ast.go
+...
+import "Monkey/token"
+
+...
+
+type LetStatement struct {
+	Token token.Token	// token.LET
+	Name *Identifier
+	Value Expression
+}
+
+func (ls *LetStatement) statementNode() {}
+func (ls *LetStatement) TokenLiteral() string {return ls.Token.Literal}
+
+type Identifier struct {
+	Token token.Token	// token.IDENT
+	Value string
+}
+
+func (i *Identifier) expressionNode()		{}
+func (i *Identifier) TokenLiteral() string	{return i.Token.Literal}
+```
+
+Prigram, LetStatement, Odentifierが定義できれば次のようなASTを表現できる.
+
+
+```mermaid
+classDiagram
+class ast_Program {
+	Statements
+}
+class ast_LetStatement {
+	Name
+	Value
+}
+
+	ast_Program --|> ast_LetStatement
+	ast_LetStatement --|> ast_Identifier
+	ast_LetStatement --|> ast_Expression
+
+```
+
+そのようなASTを構築してみる.
+
+```go
+// parser/perser.go
+package parser
+
+import (
+	"Monkey/ast"
+	"Monkey/lexer"
+	"Monkey/token"
+)
+
+type Parser struct {
+	l *lexer.Lexer
+
+	curToken  token.Token
+	peekToken token.Token
+}
+
+func New(l *lexer.Lexer) *Parser {
+	p := &Parser{l: l}
+
+	p.nextToken()
+	p.nextToken()
+
+	return p
+}
+
+func (p *Parser) nextToken() {
+	p.curToken = p.peekToken
+	p.peekToken = p.l.NextToken()
+}
+
+func (p *Parser) ParseProgram() *ast.Program {
+	return nil
+}
+
+```
+Parserにはl, curToken, peekTokenの３つのフィールドがある.これからテストを書いてParseProgramメソッドを書き始める前に、今回の再帰下降構文解析器の基本的な考え方と構造を説明しておく。次に構文解析器の重要な部分の疑似コードを示す.
+
+```
+function parseProgram() {
+	program = newProgramASTNode()
+
+	advanceTokens()
+
+	for (currentToken() != EOF_TOKEN) { 
+		statement = null
+
+		if (currentToken() == LET_TOKEN) {
+			statement = parseLetStatement()
+		}else if (currentToken() == RETURN_TOKEN) {
+			statement = parseReturnStatement()
+		}else if (currentToken() == IF_TOKEN) {
+			statement = parseIfStatement()
+		}
+
+		if (statement == null) {
+			program.Statements.push(statement)
+		}
+
+		advanceTokens()
+	}
+
+	return program
+}
+
+function parseLetStatement() {
+	advanceTokens()
+
+	identifier = parseIdentifier()
+
+	advanceTokens()
+
+	value = parseExpression()
+
+	variableStatement = newVariableStatement()
+	variableStatement.identifier = identifier
+	variableStatement.value = value
+	return variableStatement
+}
+
+function parseExpression() {
+	if (currentToken() == INTEGER_TOKEN) {
+		if (nextToken() == PLUS_TOKEN) {
+			return parseOperatorExpression()
+		} else if (nextTOken() == SEMICOLON_TOKEN) {
+			return parseIntegerLiteral()
+		}
+	}else if (currentToken() == LEFT_PAREN) {
+		return parseGroupedExpression()
+	}
+	// ...
+}
+
+function parseOperatorExpression() {
+	operator = newOperatorExpression()
+
+	operatorExpression.left = parseIntegerLiteral()
+	advanceTokens()
+	operatorExpression.right = parseExpression()
+
+	return operatorExpression()
+}
+
+// ...
+```
+再帰的な部分の中心はparceExpressionである.```3 + 3```のような式を構文解析するためには、まず```3 + ```を構文解析し、次にparseExpressionを読んで残りを構文解析する必要がある.
+```3 + # * 3```のように別の演算子が続く可能性があるからだ。ここで「Partt Parsing」を適用する.
+それは後から実装する.
+まずテストから始める.
+```go
+// parse/parse_test.go
+package parser
+
+import (
+	"Monkey/ast"
+	"Monkey/lexer"
+	"testing"
+)
+
+func TestLetStatement(t *testing.T) {
+	input := `
+	let x = 5;
+	let y = 10;
+	let foobar = 838383;
+	`
+
+	l := lexer.New(input)
+	p := New(l)
+
+	program := p.ParseProgram()
+	if program == nil {
+		t.Fatalf("ParseProgram() returned nil")
+	}
+	if len(program.Statements) != 3 {
+		t.Fatalf("program.Statements does not contain 3 statements. got=%d",
+			len(program.Statements))
+	}
+
+	tests := []struct {
+		expectedIdentifier string
+	}{
+		{"x"},
+		{"y"},
+		{"foobar"},
+	}
+
+	for i, tt := range tests {
+		stmt := program.Statements[i]
+		if !TestLetStatement(t, stmt, tt.expectedIdentifier) {
+			return
+		}
+	}
+}
+
+func tesetLetStatement(t *testing.T, s ast.Statement, name string) bool {
+	if s.TokenLiteral() != "let" {
+		t.Errorf("s.TokenLiteral not 'let'. got=%q", s.TokenLiteral())
+		return false
+	}
+
+	letStmt, ok := s.(*ast.LetStatement)
+	if !ok {
+		t.Errorf("s not *ast.LetStatement. got=%T", s)
+		return false
+	}
+
+	if letStmt.Name.Value != name {
+		t.Errorf("letStmt.Name.Value not '%s'. got=%s", name, letStmt.Name.Value)
+		return false
+	}
+
+	if letStmt.Name.TokenLiteral() != name {
+		t.Errorf("letStmt.Name.TokenLiteral() not '%s'. got=%s",
+			name, letStmt.TokenLiteral())
+		return false
+	}
+
+	return true
+}
+
+```
+テストケースで見ておく点が二つある
+
+
+* *ast.LetStatementのValueフィールドを無視している.整数リテラルが正しく構文解析されているかを確認しないのは「後でやる」から.
+* testLetStatementヘルパー関数を独立させたのは後々型変換の時に読みやすくなるため.
+
+```
+Monkey％go test ./parser
+--- FAIL: TestLetStatements (0.00s)
+    parse_test.go:21: ParseProgram() returned nil
+FAIL
+FAIL    Monkey/parser   0.308s
+FAIL
+Monkey％
+```
+
+ここからParserのParseProgram()メソッドを肉付けする.
+
+```go
+// parser/parser.go
+func (p *Parser) nextToken() {
+	p.curToken = p.peekToken
+	p.peekToken = p.l.NextToken()
+}
+
+func (p *Parser) ParseProgram() *ast.Program {
+	program := &ast.Program{}
+	program.Statements = []ast.Statement{}
+
+	for p.curToken.Type != token.EOF {
+		stmt := p.parseStatement()
+		if stmt != nil {
+			program.Statements = append(program.Statements, stmt)
+		}
+		p.nextToken()
+	}
+
+	return nil
+}
+
+```
+先の疑似コードのparseProgram()と似ている.ParseProgramが最初にすることは,ASTのルートノードを生成することである.
+それからToken.EOFになるまで,入力のノードを繰り返して読む.
+繰り返しのたびに,parseStatementを呼ぶ.構文解析すべきのもが何も無くなったら,*ast.Programルートノードが返ってくる.
+
+parseStatementはこのようになる.
+```go
+
+func (p *Parser) parseStatement() ast.Statement {
+	switch p.curToken.Type {
+	case token.LET:
+		return p.parseLetStatement()
+	default:
+		return nil
+	}
+}
+
+```
+このswitchはどんどん追加されていく.
+parseLetStatement()をかく.
+
+```go
+// paser.parser.go
+...
+func (p *Parser) parseLetStatement() *ast.LetStatement {
+	stmt := &ast.LetStatement{Token: p.curToken}
+
+	if !p.expectPeek(token.IDENT) {
+		return nil
+	}
+
+	stmt.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+
+	if !p.expectPeek(token.ASSIGN) {
+		return nil
+	}
+
+	// TODO: skipping the expressions until ;
+	for !p.curTokenIs(token.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
+func (p *Parser) curTokenIs(t token.TokenType) bool {
+	return p.curToken.Type == t
+}
+
+func (p *Parser) peekTokenIs(t token.TokenType) bool {
+	return p.peekToken.Type == t
+}
+
+func (p *Parser) expectPeek(t token.TokenType) bool {
+	if p.peekTokenIs(t) {
+		p.nextToken()
+		return true
+	} else {
+		return false
+	}
+}
+
+```
+
+```
+Monkey％go test ./parser
+ok      Monkey/parser   0.269s
+Monkey％
+```
+テストグリーン.
+let文を構文解析できるようになった！ここで式を呼び飛ばしているところは後で式の構文解析を実装したら置き換える.
+
+expectPeekメソッドは,peekToken型をチェックし,一致すればnextTokenでトークンを進める.一致しなければnilを返すがここにエラー処理を加える.
+
+```go
+// parser/parsr.go
+...
+import (
+	"Monkey/ast"
+	"Monkey/lexer"
+	"Monkey/token"
+	"fmt"
+)
+
+...
+
+type Parser struct {
+	l *lexer.Lexer
+
+	errors []string
+
+	curToken  token.Token
+	peekToken token.Token
+}
+
+func New(l *lexer.Lexer) *Parser {
+	p := &Parser{
+		l:      l,
+		errors: []string{},
+	}
+
+...
+
+
+func (p *Parser) Errors() []string {
+	return p.errors
+}
+
+func (p *Parser) peekError(t token.TokenType) {
+	msg := fmt.Sprintf("expected next token to be %s, got %s instead",
+		t, p.peekToken.Type)
+	p.errors = append(p.errors, msg)
+}
+
+```
+
+Parerにerrorフィールドができた.
+
+テストスイートを買う調子て利用するのも簡単.
+
+```go
+// parser/parser_teset.go
+
+...
+
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+
+...
+func checkParserErrors(t *testing.T, p *Parser) {
+	errors := p.Errors()
+	if len(errors) == 0 {
+		return
+	}
+
+	t.Errorf("parser has %d errors", len(errors))
+	for _, msg := range errors {
+		t.Errorf("parser error: %q", msg)
+	}
+	t.FailNow()
+}
+
+```
+
+expectPeekを変更して,次のトーキンが機体に合わない時にエラーを追加するようにする.
+
+```go
+// parser/parser.go
+...
+
+		return true
+	} else {
+		p.peekError(t)
+		return false
+	}
+}
+```
+
+ここで入力のテストケースを
+
+```go
+	input := `
+	let x 5;
+	let = 10;
+	let 838383;
+	`
+```
+
+と構文を満たしていないものに変更しテストを実行する.
+
+```
+Monkey％go test ./parser
+--- FAIL: TestLetStatements (0.00s)
+    parse_test.go:51: parser has 3 errors
+    parse_test.go:53: parser error: "expected next token to be =, got INT instead"
+    parse_test.go:53: parser error: "expected next token to be IDENT, got = instead"
+    parse_test.go:53: parser error: "expected next token to be IDENT, got INT instead"
+FAIL
+FAIL    Monkey/parser   0.207s
+FAIL
+Monkey％
+```
+
+行番号やカラム番号がなくても一度に複数のエラーを検出できる.
