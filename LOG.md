@@ -1187,7 +1187,7 @@ ast.ReturnStatementの定義をおこおなう.
 ...
 type ReturnStatement struct {
 	Token		token.Token	// 'return' token
-	Returvalue	Expression
+	ReturValue	Expression
 }
 
 func (rs *ReturnStatement) statementNode()			{}
@@ -1299,5 +1299,165 @@ return文も構文解析ができるようになった.
 	```2 * 3```などの```*```.二項演算子とも.
 * 後置演算子
 	
-	```i++```のインクリメントなど
+	```i++```のインクリメントなど.Monkeyでは実装しない.
+
+式だけからなる文のノードタイプをAStに追加する.
+
+```go
+// ast/ast.go
+
+type ExpressionStatement struct {
+	Token      token.Token // the first token of the expression
+	Expression Expression
+}
+
+func (es *ExpressionStatement) statementNode()       {}
+func (es *ExpressionStatement) TokenLiteral() string { return es.Token.Literal }
+
+```
+
+デバックなど楽のためにStringメソッドをASTノードに追加する.
+
+```go
+// ast/ast.go
+...
+
+type Node interface {
+	TokenLiteral() string
+	String() string
+}
+
+...
+func (p *Program) String() string {
+	var out bytes.Buffer
+
+	for _, s := range p.Statements {
+		out.WriteString(s.String())
+	}
+
+	return out.String()
+}
+
+```
+ProgramのStringメソッドは,バッファを作成し、それぞれの文のString()メソッドの返り値を書き込む.
+「実際の仕事」は、文のためにある3つの型,ast.LetStatement,ast.ReturnStatement,ast.ExpressionStatementに実装されるString()メソッドで行われる.
+
+```go
+// ast/ast.go
+...
+
+func (ls *LetStatement) String() string {
+	var out bytes.Buffer
+
+	out.WriteString(ls.TokenLiteral() + " ")
+	out.WriteString(ls.Name.String())
+	out.WriteString(" = ")
+
+	if ls.Value != nil {
+		out.WriteString(ls.Value.String())
+	}
+
+	out.WriteString(";")
+
+	return out.String()
+}
+
+
+...
+
+
+func (ls *LetStatement) String() string {
+	var out bytes.Buffer
+
+	out.WriteString(ls.TokenLiteral() + " ")
+	out.WriteString(ls.Name.String())
+	out.WriteString(" = ")
+
+	if ls.Value != nil {
+		out.WriteString(ls.Value.String())
+	}
+
+	out.WriteString(";")
+
+	return out.String()
+}
+
+
+...
+
+
+func (i *Identifier) String() string {
+	return i.Value
+}
+
+
+...
+
+
+func (rs *ReturnStatement) String() string {
+	var out bytes.Buffer
+
+	out.WriteString(rs.TokenLiteral() + " ")
+	if rs.ReturnValue != nil {
+		out.WriteString(rs.ReturnValue.String())
+	}
+
+	out.WriteString(";")
+
+	return out.String()
+}
+
+```
+
+nilはのちに変更.
+*ast.ProgramのStringメソッドを呼び出すだけで,プログラム全体を文字列として復元できる.
+次のソースコードをテストする.
+
+```
+let myVar = anotherVar;
+```
+
+```go
+// ast/ast_test.go
+package ast
+
+import (
+	"Monkey/token"
+	"testing"
+)
+
+func TestString(t *testing.T) {
+	program := &Program{
+		Statements: []Statement{
+			&LetStatement{
+				Token: token.Token{Type: token.LET, Literal: "let"},
+				Name: &Identifier{
+					Token: token.Token{Type: token.IDENT, Literal: "myVar"},
+					Value: "myVar",
+				},
+				Value: &Identifier{
+					Token: token.Token{Type: token.IDENT, Literal: "anotherVar"},
+					Value: "anotherVar",
+				},
+			},
+		},
+	}
+
+	if program.String() != "let myVar = anotherVar;" {
+		t.Errorf("program.String() wrong. got=%q", program.String())
+	}
+}
+
+```
+このテストでは,構文解析器が生成したASTに対して文字列の比較を行うことで、可読性の高いテストのレイヤーを追加できるようにしてくれる.
+
+###Prattの構文解析器の実装
+
+Pratt構文解析器の考え方で重要なのは,トークンタイプごとに構文解析関数を関連づけることである.対応するトークンタイプに遭遇するたびに,対応する構文解析関数が呼ばれる。この関数は適切な指揮を構文解析し、その指揮を表現するASTノードを返す。
+
+最初に必要なのは、これらの関連を組み立てることである。
+２つの関数を定義する。
+
+* 「前置構文解析関数(prefix parsing function)」
+* 「中置構文解析関数(infix parsing function)」
 
