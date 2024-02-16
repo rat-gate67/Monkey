@@ -1174,3 +1174,130 @@ Monkey％
 ```
 
 行番号やカラム番号がなくても一度に複数のエラーを検出できる.
+
+2024/02/16
+### rerurn文の構文解析
+
+returnの分の構造は```return<statement>;```となる.
+ast.ReturnStatementの定義をおこおなう.
+
+```go
+// ast/ast.go
+
+...
+type ReturnStatement struct {
+	Token		token.Token	// 'return' token
+	Returvalue	Expression
+}
+
+func (rs *ReturnStatement) statementNode()			{}
+func (rs *ReturnStatement) TokenLiteral() string	{ return rs.Token.Literal }
+```
+
+次にテストを書く.
+
+```go
+// ast/ast.go
+
+func TestReturnStatements(t *testing.T) {
+	input := `
+	return 5;
+	return 10;
+	return 993322;
+	`
+
+	l := lexer.New(input)
+	p := New(l)
+
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+
+	if len(program.Statements) != 3 {
+		t.Fatalf("program.Statements does not contain 3 statements. got=%d",
+			len(program.Statements))
+	}
+
+	for _, stmt := range program.Statements {
+		returnStmt, ok := stmt.(*ast.ReturnStatement)
+		if !ok {
+			t.Errorf("stmt not *ast.ReturnStatement. got=%T", stmt)
+			continue
+		}
+		if returnStmt.TokenLiteral() != "return" {
+			t.Errorf("returnStmt.TokenLiteral not 'return', got %q",
+				returnStmt.TokenLiteral())
+		}
+	}
+}
+
+```
+```
+=== RUN   TestReturnStatements
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:23: program.Statements does not contain 3 statements. got=0
+--- FAIL: TestReturnStatements (0.00s)
+FAIL
+FAIL    Monkey/parser   0.324s
+```
+
+parseStatementメソッドを更新し,token.RETURNを受け取るようにして,このテストを通せるようにする.
+
+```go
+// parser/parser.go
+...
+func (p *Parser) parseStatement() ast.Statement {
+	switch p.curToken.Type {
+	case token.LET:
+		return p.parseLetStatement()
+	case token.RETURN:
+		return p.parseReturnStatement()
+	default:
+		return nil
+	}
+}
+...
+func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
+	stmt := &ast.ReturnStatement{Token: p.curToken}
+
+	p.nextToken()
+
+	// TODO: skipping the expressions until ;
+	for !p.curTokenIs(token.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+...
+
+```
+```
+=== RUN   TestReturnStatements
+--- PASS: TestReturnStatements (0.00s)
+PASS
+ok      Monkey/parser   0.329s
+```
+
+return文も構文解析ができるようになった.
+
+### 式の構文解析
+
+次の算術式を構文解析したいとする.
+
+```5 * 5 + 5```
+
+ここで欲しいのは,次のような指揮を表現するAST.
+
+```((5 * 5) + 5)```
+
+以下の用語が登場する.
+
+* 前置演算子
+	
+	```-1```や```!true```の```-```や```!```
+* 中置演算子
+	
+	```2 * 3```などの```*```.二項演算子とも.
+* 後置演算子
+	
+	```i++```のインクリメントなど
+
