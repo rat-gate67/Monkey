@@ -1461,3 +1461,342 @@ Pratt構文解析器の考え方で重要なのは,トークンタイプごと�
 * 「前置構文解析関数(prefix parsing function)」
 * 「中置構文解析関数(infix parsing function)」
 
+```go
+// parser/parser.go
+
+type (
+	prefixParseFn func() ast.Expression
+	infixParseFn  func(ast.Expression) ast.Expression
+)
+
+```
+
+infixParseFnは別のast.Epressionを引数に受け取る。
+
+構文解析器が現在のトークンタイプに応じて適切なprefixPrseFnやinfixParseFnを取得できるように、Parser構造体に2つのマップを追加する。
+
+```go
+// parser_parser.go
+...
+type Parser struct {
+	l *lexer.Lexer
+
+	errors []string
+
+	curToken  token.Token
+	peekToken token.Token
+	
+	prefixParseFns map[token.TokenType]prefixParseFn
+	infixParseFns  map[token.TokenType]infixParseFn
+}
+
+...
+```
+
+これらのmapを用意すればcurToken.Typeに感染づけられた構文解析関数がマップにあるかどうかがすぐにチェックできる。
+
+
+これから、Paserに２つのヘルペーメソッドを追加する。
+
+```go
+// parser/paser.go
+...
+func (p *Parser) registerPrefix(tokenType token.TokenType, fn prefixParseFn) {
+	p.prefixParseFns[tokenType] = fn
+}
+
+func (p *Parser) registerInfic(tokenType token.TokenType, fn infixParseFn) {
+	p.infixParseFns[tokenType] = fn
+}
+...
+```
+
+マップにエントリを追加する.
+
+### 識別子
+
+識別子は式である。
+テストを書く。
+
+```go
+// parsr/parser_test.go
+
+func TestIdentifierExpression(t *testing.T) {
+	input := "foobar;"
+
+	l := lexer.New(input)
+	p := New(l)
+
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program has enough statements. got=%d",
+			len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+			program.Statements[0])
+	}
+
+	ident, ok := stmt.Expression.(*ast.Identifier)
+	if !ok {
+		t.Errorf("exp not *ast.Identifier. got=%T", stmt.Expression)
+	}
+
+	if ident.Value != "foobar" {
+		t.Errorf("ident.Value not %s. got=%s", "foobar", ident.Value)
+	}
+
+	if ident.TokenLiteral() != "foobar" {
+		t.Errorf("ident.TokenLiteral not %s. got=%s", "foobar", ident.TokenLiteral())
+	}
+
+}
+
+```
+
+長いが```foobar;```に対して以下のようなことを確認している。
+
+* ASTが一つからなるか
+* それが式文か
+* それが識別子か
+* 値がfoobarか
+* リテラルがfoobarか
+
+```
+=== RUN   TestIdentifierExpression
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:19: program has enough statements. got=0
+--- FAIL: TestIdentifierExpression (0.00s)
+FAIL
+FAIL    Monkey/parser   0.276s
+
+```
+
+失敗する。parseStatements()メソッドを書く必要がある。
+
+```go
+// parser/parser.go
+
+func (p *Parser) parseStatement() ast.Statement {
+	switch p.curToken.Type {
+	case token.LET:
+		return p.parseLetStatement()
+	case token.RETURN:
+		return p.parseReturnStatement()
+	default:
+		return p.parseExpressionStatement()
+	}
+}
+
+
+...
+
+
+func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
+	stmt := &ast.ExpressionStatement{Token: p.curToken}
+
+	stmt.Expression = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(token.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+```
+
+LOWESRが未定義である.
+
+```go
+// parser/parser.go
+...
+
+
+const (
+	_ int = iota
+	LOWEST
+	EQUALS      // ==
+	LESSGREATER // > or <
+	SUM         // +
+	PRODUCT     // *
+	PREFIX      // -X or !X
+	CALL        // myFunction(X)
+)
+
+...
+```
+
+これは演算子の優先順を示している。
+
+parseExpressionを書く。
+
+```go
+// parser/parser.go
+func (p *Parser) parseExpression(precedence int) ast.Expression {
+	prefix := p.prefixParseFns[p.curToken.Type]
+	if prefix == nil {
+		return nil
+	}
+	leftExp := prefix()
+
+	return leftExp
+}
+
+```
+これが最初のバージョンである。現時点ではまだどのトークンにも構文解析関数を関連づけてkないので、常にnilが返る。
+
+次はNew()関数を更新する。
+
+```go
+// parser/parsr.go
+
+
+func New(l *lexer.Lexer) *Parser {
+	p := &Parser{
+		l:      l,
+		errors: []string{},
+	}
+
+	p.prefixParseFns = make(map[token.TokenType]prefixParseFn)
+	p.registerPrefix(token.IDENT, p.parseIdentifier)
+
+	p.nextToken()
+	p.nextToken()
+
+	return p
+}
+
+
+func (p *Parser) parseIdentifier() ast.Expression {
+	return &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+}
+
+```
+
+ParserのprefixParseFnsを初期化し、構文解析関数を登録する。
+もしトークンタイプtoken.IDENTが出現したら、呼び出すべき構文解析関数はparseIdentifierである。
+
+```
+=== RUN   TestIdentifierExpression
+--- PASS: TestIdentifierExpression (0.00s)
+PASS
+ok      Monkey/parser   0.289s
+```
+
+### 整数リテラル
+```5;```
+のように値を返すことを考えると整数も式である.
+
+テストケースを書く.
+
+```go
+// parser/parsr_test
+func TestIntegerLiteralExpression(t *testing.T) {
+	input := "5;"
+
+	l := lexer.New(input)
+	p := New(l)
+
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+
+	if len(program.Statements) != 1 {
+		t.Errorf("program has not enough statements. got=%d",
+			len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Errorf("program.Statements[0] is not ast.ExpessionStatement. got=%T",
+			program.Statements[0])
+	}
+
+	literal, ok := stmt.Expression.(*ast.IntegerLiteral)
+	if !ok {
+		t.Errorf("exp not *ast.IntegerLiteral. got=%T", stmt.Expression)
+	}
+	if literal.Value != 5 {
+		t.Errorf("literal.Value not %d. got=%d", 5, literal.Value)
+	}
+	if literal.TokenLiteral() != "5" {
+		t.Errorf("literal.TokenLiteral not %s. got=%s", "5", literal.TokenLiteral())
+	}
+}
+```
+```
+# Monkey/parser
+/Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:29:53: expected ')', found '('
+FAIL    Monkey/parser [setup failed]
+```
+*ast.IntegerLiteralが定義されていないので定義する。
+
+```go
+// ast/ast.go
+type IntegerLiteral struct {
+	Token token.Token
+	Value int64
+}
+
+func (il *IntegerLiteral) expressionNode() 		{}
+func (il *IntegerLiteral) TokenLiteral() string { return il.Token.Literal }
+func (il *IntegerLiteral) String() string 		{ return il.Token.Literal}
+```
+
+Valueは64bit整数なのでその変換をparseInteger()で行う。
+
+```go
+// ast/ast.go
+import (
+	...
+	"strconv"
+)
+
+...
+
+func (p *Parser) parseIntegerLitaral() ast.Expression {
+	lit := &ast.IntegerLiteral{Token: p.curToken}
+
+	value, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
+	if err != nil {
+		msg := fmt.Sprintf("could not parse %q as integer", p.curToken.Literal)
+		p.errors = append(p.errors, msg)
+		return nil
+	}
+
+	lit.Value = value
+	return lit
+}
+
+```
+
+これを初期化の際にprefixParseFnに登録する。
+
+```go
+func New(l *lexer.Lexer) *Parser {
+	p := &Parser{
+		l:      l,
+		errors: []string{},
+	}
+
+	p.prefixParseFns = make(map[token.TokenType]prefixParseFn)
+	p.registerPrefix(token.IDENT, p.parseIdentifier)
+	p.registerPrefix(token.INT, p.parseIntegerLiteral)
+
+	p.nextToken()
+	p.nextToken()
+
+	return p
+}
+```
+
+```
+
+=== RUN   TestIntegerLiteralExpression
+--- PASS: TestIntegerLiteralExpression (0.00s)
+PASS
+ok      Monkey/parser   0.280s
+```
+テストは成功する.
