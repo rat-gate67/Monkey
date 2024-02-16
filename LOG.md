@@ -1,5 +1,5 @@
 ## 2024/02/13
-「GO言語で作るインタプリタ」に出を出す.
+「GO言語で作るインタプリタ」に手を出す.
 
 token.goにTokenを定義した.
 ```go
@@ -160,6 +160,8 @@ func newToken(tokenType token.TokenType, ch byte) token.Token {
 }
 
 ```
+lexerは初期化するとフィールドの整数には0が代入される。
+
 ### GOのメソッド
 本書ではヘルパメソッドとしていたが、NextToken()メソッドはLexer構造体のメソッドである。
 レシーバで構造体を指定してあとは関数のように定義する。
