@@ -1800,3 +1800,233 @@ PASS
 ok      Monkey/parser   0.280s
 ```
 テストは成功する.
+
+### 前置演算子
+
+これらが前置演算として許されている。
+
+```
+-5;
+!foobar;
+5 + -10;
+```
+
+これらの使い方は次の構造になっている。
+
+```
+<prefix operator><expression>;
+```
+
+前置演算子式のASTノードは、そのオペランドとしてあらゆる指揮を指し示すことができる。
+
+テストケースを作成する。
+
+```go
+// parser/parser_test.go
+...
+
+func TestParsePrefixExpression(t *testing.T) {
+	prefixTests := []struct {
+		input			string
+		operator		string
+		integerValue	int64
+	} {
+		{"!5;", "!", 5},
+		{"-15;", "-", 15},
+	}
+
+	for _, tt := range prefixTests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		if len(program.Statements) != 1 {
+			t.Fatalf("program.Statements does not contain %d statements. got=%d\n",
+				l, len(program.Statements))
+		}
+
+		stmt, ok := program.Statements[0]
+		if !ok {
+			t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+				program.Statements[0])
+		}
+
+		exp, ok := stmt.(*ast.ExpressionStatement)
+		if !ok {
+			t.Fatalf("stmt.Expression is not ast.PrefixExpression. got=%T",
+				stmt.Expression)
+		}
+
+		if exp.Operator != tt.operator {
+			t.Fatalf("exp.Operator is not '%s'. got=%s",
+				tt.Operator, exp.Operator)
+		}
+
+		if !testIntegerLiteral(t, exp.Right, tt.integerValue) {
+			return
+		}
+	}
+}
+
+...
+
+```
+
+テスト関数ではテスト入力のスライスを処理し、生成されたASTについてアサーションを設ける。
+
+```go
+// parer/parser_test.go
+import (
+	...
+	"fmt"
+	...
+)
+
+...
+
+
+func testIntegerLiteral(t *testing.T, il ast.Expression, value int64) bool {
+	integ, ok := il.(*ast.IntegerLiteral)
+	if !ok {
+		t.Errorf("il not *ast.IntegerLiteral. got=%d", il)
+		return false
+	}
+
+	if integ.Value != value {
+		t.Errorf("integ.Value not %d. got=%d", value, integ.Value)
+		return false
+	}
+
+	if integ.TokenLiteral() != fmt.Sprintf("%d", value) {
+		t.Errorf("integ.TokenLiteral not %d. got=%s", value, integ.TokenLiteral())
+		return false
+	}
+
+	return true
+}
+
+
+```
+
+PrefixExpressionのASTを作成する。
+
+```go 
+// ast/ast_test.go
+...
+
+type PrefixExpression struct {
+	Token    token.Token
+	Operator string
+	Right    Expression
+}
+
+func (pe *PrefixExpression) expressionNode()      {}
+func (pe *PrefixExpression) TokenLiteral() string { return pe.Token.Literal }
+func (pe *PrefixExpression) String() string {
+	var out bytes.Buffer
+
+	out.WriteString("(")
+	out.WriteString(pe.Operator)
+	out.WriteString(pe.Right.String())
+	out.WriteString(")")
+
+	return out.String()
+}
+
+```
+
+```
+=== RUN   TestParsePrefixExpression
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:27: program.Statements does not contain 1 statements. got=2
+--- FAIL: TestParsePrefixExpression (0.00s)
+FAIL
+FAIL    Monkey/parser   0.366s
+```
+
+文が2文読み取られていると出ている。ここでエラー文を追加する。
+
+```go
+// parser/parser.go
+func (p *Parser) noPrefixParseFnError(t token.TokenType) {
+	msg := fmt.Sprintf("no prefix parse function for %s found", t)
+	p.errors = append(p.errors, msg)
+}
+
+
+...
+func (p *Parser) parseExpression(precedence int) ast.Expression {
+	prefix := p.prefixParseFns[p.curToken.Type]
+	if prefix == nil {
+		p.noPrefixParseFnError(p.curToken.Type)
+		return nil
+	}
+	leftExp := prefix()
+
+	return leftExp
+}
+
+//
+
+```
+
+```
+=== RUN   TestParsePrefixExpression
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:194: parser has 1 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:196: parser error: "no prefix parse function for ! found"
+--- FAIL: TestParsePrefixExpression (0.00s)
+FAIL
+FAIL    Monkey/parser   0.540s
+```
+
+前置演算子式の構文解析関数をかき構文解析器に登録しなければいけないことがわかる。
+
+```go
+// parser/parser.go
+
+func New(l *lexer.Lexer) *Parser {
+	p := &Parser{
+		l:      l,
+		errors: []string{},
+	}
+
+	p.prefixParseFns = make(map[token.TokenType]prefixParseFn)
+	p.registerPrefix(token.IDENT, p.parseIdentifier)
+	p.registerPrefix(token.INT, p.parseIntegerLiteral)
+
+	p.nextToken()
+	p.nextToken()
+
+		
+	p.registerPrefix(token.BANG, p.parsePrefixExpression)
+	p.registerPrefix(token.MINUS, p.parsePrefixExpression)
+
+	return p
+}
+
+...
+
+func (p *Parser) parsePrefixExpression() ast.Expression {
+	expression := &ast.PrefixExpression {
+		Token:		p.curToken,
+		Operator:	p.curToken.Literal,
+	}
+
+	p.nextToken()
+
+	expression.Right = p.parseExpression(PREFIX)
+
+	return expression
+}
+
+
+```
+これまでの構文解析関数と違うのは、p.nextToken()を呼び出してトークンを進めている.
+
+```
+=== RUN   TestParsePrefixExpression
+--- PASS: TestParsePrefixExpression (0.00s)
+PASS
+ok      Monkey/parser   0.426s
+
+```
