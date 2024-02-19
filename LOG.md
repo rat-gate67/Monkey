@@ -2032,3 +2032,220 @@ PASS
 ok      Monkey/parser   0.426s
 
 ```
+
+### 中置演算子
+
+以下の8つの中置演算子を構文解析する。
+
+```
+5 + 5;
+5 - 5;
+5 * 5;
+5 / 5;
+5 > 5;
+5 < 5;
+5 == 5;
+5 != 5;
+```
+
+これらの構造は以下のようになっている。
+
+```
+<expression> <infix operator> <exprssion> 
+```
+
+テストを書く.
+
+```go
+// oarser/parser_test.go
+func TestParseInfixExpressions(t *testing.T) {
+	infixTests := []struct {
+		input      string
+		leftValue  int64
+		operator   string
+		rightValue int64
+	}{
+		{"5 + 5;", 5, "+", 5},
+		{"5 - 5;", 5, "-", 5},
+		{"5 * 5;", 5, "*", 5},
+		{"5 / 5", 5, "/", 5},
+		{"5 > 5;", 5, ">", 5},
+		{"5 < 5;", 5, "<", 5},
+		{"5 == 5;", 5, "==", 5},
+		{"5 != 5;", 5, "!=", 5},
+	}
+
+	for _, tt := range infixTests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		if len(program.Statements) != 1 {
+			t.Fatalf("program.Statements does not contain %d statements. got=%d\n",
+				1, len(program.Statements))
+		}
+
+		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+		if !ok {
+			t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+				program.Statements[0])
+		}
+
+		exp, ok := stmt.Expression.(*ast.InfixExpression)
+		if !ok {
+			t.Fatalf("exp is not ast.InfixExpression. got=%T",
+				stmt.Expression)
+		}
+
+		if !testIntegerLiteral(t, exp.Left, tt.leftValue) {
+			return
+		}
+
+		if exp.Operator != tt.operator {
+			t.Fatalf("exp.Operator is not '%s'. got=%s",
+				tt.operator, exp.Operator)
+		}
+
+		if !testIntegerLiteral(t, exp.Right, tt.rightValue) {
+			return
+		}
+	}
+}
+```
+
+これはprefixの時とほぼ同じ。抽象構文木をつくる。
+
+```go
+// ast/ast_go
+type InfixExpression struct {
+	Token    token.Token // + - * / ...
+	Left     Expression
+	Operator string
+	Right    Expression
+}
+
+func (ie *InfixExpression) expressionNode()      {}
+func (ie *InfixExpression) TokenLiteral() string { return ie.Token.Literal }
+func (ie *InfixExpression) String() string {
+	var out bytes.Buffer
+
+	out.WriteString("(")
+	out.WriteString(ie.Left.String())
+	out.WriteString(" " + ie.Operator + " ")
+	out.WriteString(ie.Right.String())
+	out.WriteString(")")
+
+	return out.String()
+}
+
+```
+
+```
+=== RUN   TestParseInfixExpressions
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:249: parser has 1 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:251: parser error: "no prefix parse function for + found"
+--- FAIL: TestParseInfixExpressions (0.00s)
+FAIL
+FAIL    Monkey/parser   0.569s
+```
+
+これは前置構文解析関数がないと行っている。ここで欲しいのは+に対する前置構文解析関数ではなく中置演算解析関数である。
+
+まずは優先順位テーブルとヘルパーメソッドがいくつか定義する。
+
+```go
+// parser/parser.go
+var precedences = map[token.TokenType]int{
+	token.EQ:		EQUALS,
+	token.NOT_EQ:	EQUALS,
+	token.LT:		LESSGREATER,
+	token.GT:		LESSGREATER,
+	token.PLUS:		SUM,
+	token.MINUS:	SUM,
+	token.SLASH:	PRODUCT,
+	token.ASTERISK:	PRODUCT,
+}
+
+func (p* Parser) peekPrecedence() int {
+	if p, ok := precedences[p.peekToken.Type]; ok {
+		return p
+	}
+
+	return LOWEST
+}
+
+func (p *Parser) curPrecedence() int {
+	if p, ok := precedences[p.curToken.Type]; ok {
+		return p
+	}
+
+	return LOWEST
+}
+
+```
+
+そして一つの中置構文解析関数をすべての中置演算子に対して登録する。
+
+```go
+...
+	p.registerPrefix(token.BANG, p.parsePrefixExpression)
+	p.registerPrefix(token.MINUS, p.parsePrefixExpression)
+
+	p.infixParseFns = make(map[token.TokenType]infixParseFn)
+	p.registerInfix(token.PLUS, p.parseInfixExpression)
+	p.registerInfix(token.MINUS, p.parseInfixExpression)
+	p.registerInfix(token.SLASH, p.parseInfixExpression)
+	p.registerInfix(token.ASTERISK, p.parseInfixExpression)
+	p.registerInfix(token.EQ, p.parseInfixExpression)
+	p.registerInfix(token.NOT_EQ, p.parseInfixExpression)
+	p.registerInfix(token.LT, p.parseInfixExpression)
+	p.registerInfix(token.GT, p.parseInfixExpression)
+
+
+	return p
+}
+
+func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
+	expression := &ast.InfixExpression {
+		Token:		p.curToken,
+		Operator: 	p.curToken.Literal,
+		Left: 		left,
+	}
+
+	precedence := p.curPrecedence()
+	p.nextToken()
+	expression.Right = p.parseExpression(precedence)
+
+	return expression
+}
+
+```
+最終的なparseExpressionは次のようになる。
+
+```go
+
+
+func (p *Parser) parseExpression(precedence int) ast.Expression {
+	prefix := p.prefixParseFns[p.curToken.Type]
+	if prefix == nil {
+		p.noPrefixParseFnError(p.curToken.Type)
+		return nil
+	}
+	leftExp := prefix()
+
+	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
+		infix := p.infixParseFns[p.peekToken.Type]
+		if infix == nil {
+			return leftExp
+		}
+
+		p.nextToken()
+
+		leftExp = infix(leftExp)
+	}
+
+	return leftExp
+}
+
+```
