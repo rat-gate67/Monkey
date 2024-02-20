@@ -2249,3 +2249,162 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 }
 
 ```
+
+### Prrat構文解析の仕組み
+
+事前に用意されたparse_tracing.goのtrace/untraceを使って```-1 * 2 + 3```の構文解析の過程を可視化する。
+
+```go
+// parsr/parse_tracing.go
+package parser
+
+import (
+	"fmt"
+	"strings"
+)
+
+var traceLevel int = 0
+
+const traceIdentPlaceholder string = "\t"
+
+func identLevel() string {
+	return strings.Repeat(traceIdentPlaceholder, traceLevel-1)
+}
+
+func tracePrint(fs string) {
+	fmt.Printf("%s%s\n", identLevel(), fs)
+}
+
+func incIdent() { traceLevel = traceLevel + 1 }
+func decIdent() { traceLevel = traceLevel - 1 }
+
+func trace(msg string) string {
+	incIdent()
+	tracePrint("BEGIN " + msg)
+	return msg
+}
+
+func untrace(msg string) {
+	tracePrint("END " + msg)
+	decIdent()
+}
+
+
+```
+
+```go
+// parser/parser_test.go
+func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
+	defer untrace(trace("parseExpressionStatement"))
+	stmt := &ast.ExpressionStatement{Token: p.curToken}
+
+	stmt.Expression = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(token.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseExpression(precedence int) ast.Expression {
+	defer untrace(trace("parseExpression"))
+	prefix := p.prefixParseFns[p.curToken.Type]
+	if prefix == nil {
+		p.noPrefixParseFnError(p.curToken.Type)
+		return nil
+	}
+	leftExp := prefix()
+
+	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
+		infix := p.infixParseFns[p.peekToken.Type]
+		if infix == nil {
+			return leftExp
+		}
+
+		p.nextToken()
+
+		leftExp = infix(leftExp)
+	}
+
+	return leftExp
+}
+
+
+func (p *Parser) parseIntegerLiteral() ast.Expression {
+	defer untrace(trace("parseIntegerLiteral"))
+	lit := &ast.IntegerLiteral{Token: p.curToken}
+
+	value, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
+	if err != nil {
+		msg := fmt.Sprintf("could not parse %q as integer", p.curToken.Literal)
+		p.errors = append(p.errors, msg)
+		return nil
+	}
+
+	lit.Value = value
+	return lit
+}
+
+func (p *Parser) parsePrefixExpression() ast.Expression {
+	defer untrace(trace("parsePrefixExpression"))
+	expression := &ast.PrefixExpression{
+		Token:    p.curToken,
+		Operator: p.curToken.Literal,
+	}
+
+	p.nextToken()
+
+	expression.Right = p.parseExpression(PREFIX)
+
+	return expression
+}
+
+func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
+	defer untrace(trace("parseInfixExpression"))
+	expression := &ast.InfixExpression{
+		Token:    p.curToken,
+		Operator: p.curToken.Literal,
+		Left:     left,
+	}
+
+	precedence := p.curPrecedence()
+	p.nextToken()
+	expression.Right = p.parseExpression(precedence)
+
+	return expression
+}
+
+```
+
+```
+=== RUN   TestOperatorPrecedenceParsing
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+                BEGIN parsePrefixExpression
+                        BEGIN parseExpression
+                                BEGIN parseIntegerLiteral
+                                END parseIntegerLiteral
+                        END parseExpression
+                END parsePrefixExpression
+                BEGIN parseInfixExpression
+                        BEGIN parseExpression
+                                BEGIN parseIntegerLiteral
+                                END parseIntegerLiteral
+                        END parseExpression
+                END parseInfixExpression
+                BEGIN parseInfixExpression
+                        BEGIN parseExpression
+                                BEGIN parseIntegerLiteral
+                                END parseIntegerLiteral
+                        END parseExpression
+                END parseInfixExpression
+        END parseExpression
+END parseExpressionStatement
+--- PASS: TestOperatorPrecedenceParsing (0.00s)
+PASS
+ok      Monkey/parser   0.383s
+```
+```-1 * 2 + 3 ```
+
+
