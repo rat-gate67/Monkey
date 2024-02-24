@@ -3455,3 +3455,215 @@ PASS
 ok      Monkey/parser   0.112s
 
 ```
+
+### 呼び出し式
+
+関数を呼び出し式を構文解析する。
+
+```
+<expression> (<commma separated expression>)
+```
+
+ASTノードは次のようになる。
+
+```go
+// ast/ast.go
+
+type CallExpression struct {
+	Token     token.Token
+	Function  Expression // Identifier or FunctionLiteral
+	Arguments []Expression
+}
+
+func (ce *CallExpression) expressionNode()      {}
+func (ce *CallExpression) TokenLiteral() string { return ce.Token.Literal }
+func (ce *CallExpression) String() string {
+	var out bytes.Buffer
+
+	args := []string{}
+	for _, a := range ce.Arguments {
+		args = append(args, a.String())
+	}
+
+	out.WriteString(ce.Function.String())
+	out.WriteString("(")
+	out.WriteString(strings.Join(args, ", "))
+	out.WriteString(")")
+
+	return out.String()
+}
+```
+
+テストは引数ごとに複数かく。
+
+```go
+// parser/parser_test.go
+
+func TestCallExpressionParsing(t *testing.T) {
+	input := "add(1, 2 * 3, 4 + 5);"
+
+	l := lexer.New(input)
+	p := New(l)
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program.Statements does not contain %d statements. got=%d\n",
+			1, len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("stmt is not ast.ExpressionStatement. got=%T",
+			program.Statements[0])
+	}
+
+	exp, ok := stmt.Expression.(*ast.CallExpression)
+	if !ok {
+		t.Fatalf("stmt.Expression is not ast.CallExpression. got=%T",
+			stmt.Expression)
+	}
+
+	if !testIdentifier(t, exp.Function, "add") {
+		return
+	}
+
+	if len(exp.Arguments) != 3 {
+		t.Fatalf("wrong length of arguments. got=%d", len(exp.Arguments))
+	}
+
+	testLiteralExpression(t, exp.Arguments[0], 1)
+	testInfixExpression(t, exp.Arguments[1], 2, "*", 3)
+	testInfixExpression(t, exp.Arguments[2], 4, "+", 5)
+}
+
+func TestCallExpressionParameterParsing(t *testing.T) {
+	tests := []struct {
+		input         string
+		expectedIdent string
+		expectedArgs  []string
+	}{
+		{
+			input:         "add();",
+			expectedIdent: "add",
+			expectedArgs:  []string{},
+		},
+		{
+			input:         "add(1);",
+			expectedIdent: "add",
+			expectedArgs:  []string{"1"},
+		},
+		{
+			input:         "add(1, 2 * 3, 4 + 5);",
+			expectedIdent: "add",
+			expectedArgs:  []string{"1", "(2 * 3)", "(4 + 5)"},
+		},
+	}
+
+	for _, tt := range tests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		stmt := program.Statements[0].(*ast.ExpressionStatement)
+		exp, ok := stmt.Expression.(*ast.CallExpression)
+		if !ok {
+			t.Fatalf("stmt.Expression is not ast.CallExpression. got=%T",
+				stmt.Expression)
+		}
+
+		if !testIdentifier(t, exp.Function, tt.expectedIdent) {
+			return
+		}
+
+		if len(exp.Arguments) != len(tt.expectedArgs) {
+			t.Fatalf("wrong number of arguments. want=%d, got=%d",
+				len(tt.expectedArgs), len(exp.Arguments))
+		}
+
+		for i, arg := range tt.expectedArgs {
+			if exp.Arguments[i].String() != arg {
+				t.Errorf("argument %d wrong. want=%q, got=%q", i,
+					arg, exp.Arguments[i].String())
+			}
+		}
+	}
+}
+
+```
+まず上から。
+
+```
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:561: parser has 4 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:563: parser error: "expected next token to be ), got , instead"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:563: parser error: "no prefix parse function for , found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:563: parser error: "no prefix parse function for , found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:563: parser error: "no prefix parse function for ) found"
+--- FAIL: TestCallExpressionParsing (0.00s)
+FAIL
+FAIL    Monkey/parser   0.299s
+```
+
+prefixParseFnの未登録エラーが出ていない。新しく出てきたトークンタイプがないからだ。
+
+よって(が出てきたところから構文解析を行う。
+
+```go
+// parser/parser.go
+
+var precedences = map[token.TokenType]int{
+	token.EQ:       EQUALS,
+	...
+	token.LPAREN:   CALL,
+}
+
+...
+
+p.registerInfix(token.LPAREN, p.parseCallExpression)
+
+...
+
+
+func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
+	exp := &ast.CallExpression{Token: p.curToken, Function: function}
+	exp.Arguments = p.parseCallArguments()
+	return exp
+}
+
+func (p *Parser) parseCallArguments() []ast.Expression {
+	args := []ast.Expression{}
+
+	if p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		return args
+	}
+
+	p.nextToken()
+	args = append(args, p.parseExpression(LOWEST))
+
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken()
+		p.nextToken()
+		args = append(args, p.parseExpression(LOWEST))
+	}
+
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+
+	return args
+}
+
+
+```
+
+```
+--- PASS: TestCallExpressionParsing (0.00s)
+PASS
+ok      Monkey/parser   0.321s
+--- PASS: TestCallExpressionParameterParsing (0.00s)
+PASS
+ok      Monkey/parser   0.145s
+
+```
