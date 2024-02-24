@@ -2408,3 +2408,441 @@ ok      Monkey/parser   0.383s
 ```-1 * 2 + 3 ```
 
 
+## 構文解析器の拡張
+
+テストをわかりやすく拡張する。
+```go
+// parser/praser_test.go
+
+func testIdentifier(t *testing.T, exp ast.Expression, value string) bool {
+	ident, ok := exp.(*ast.Identifier)
+	if !ok {
+		t.Errorf("exp not *ast.Identifier. got=%T", exp)
+		return false
+	}
+
+	if ident.Value != value {
+		t.Errorf("ident.Value not %s. got=%s",value, ident.Value)
+		return false
+	}
+
+	if ident.TokenLiteral() != value {
+		t.Errorf("ident.TokenLiteral not %s. got=%s", value, ident.TokenLiteral())
+		return false
+	}
+
+	return true
+}
+```
+testIntegerLiteralとtestIdentifierを使って、より一般的なヘルパー関数を作る。
+
+```go
+// parsr/parser_test.go
+
+func testIdentifier(t *testing.T, exp ast.Expression, value string) bool {
+	ident, ok := exp.(*ast.Identifier)
+	if !ok {
+		t.Errorf("exp not *ast.Identifier. got=%T", exp)
+		return false
+	}
+
+	if ident.Value != value {
+		t.Errorf("ident.Value not %s. got=%s", value, ident.Value)
+		return false
+	}
+
+	if ident.TokenLiteral() != value {
+		t.Errorf("ident.TokenLiteral not %s. got=%s", value, ident.TokenLiteral())
+		return false
+	}
+
+	return true
+}
+
+func testLiteralExpression(
+	t *testing.T,
+	exp ast.Expression,
+	expected interface{},
+) bool {
+	switch v := expected.(type) {
+	case int:
+		return testIntegerLiteral(t, exp, int64(v))
+	case int64:
+		return testIntegerLiteral(t, exp, v)
+	case string:
+		return testIdentifier(t, exp, v)
+	}
+	t.Errorf("type of exp not handle. got=%T", exp)
+
+	return false
+}
+
+func testInfixExpression(t *testing.T,
+	exp ast.Expression,
+	left interface{},
+	operator string,
+	right interface{},
+) bool {
+	opExp, ok := exp.(*ast.InfixExpression)
+	if !ok {
+		t.Errorf("exp is not ast.InfixExpression. got=%T", exp)
+		return false
+	}
+
+	if !testLiteralExpression(t, opExp.Left, left) {
+		return false
+	}
+
+	if opExp.Operator != operator {
+		return false
+	}
+
+	if !testLiteralExpression(t, opExp.Right, right) {
+		return false
+	}
+
+	return true
+}
+
+```
+
+これらのヘルパー関数を用意すると次のようなテストコードが書けるようになる。
+```go
+testInfixExpression(t, stmt.Expression, 5, "+", 5)
+testInfixExpression(t, stmt.Expression, "alice", "*", "bob")
+```
+
+### 真偽値リテラル
+
+式を置ける場所であればどこでも真偽値を使うことができる。
+
+```
+true;
+false;
+let hoobar = true;
+let barhoo = false;
+```
+AST表現はシンプルで小さい。
+```go
+// ast/ast.go
+
+type Boolean struct {
+	Token token.Token
+	Value bool
+}
+
+func (b *Boolean) expressionNode()		{}
+func (b *Boolean) TokenLiteral() string	{ return b.Token.Literal }
+func (b *Boolean) String()	string		{ return b.Token.Literal }
+```
+
+
+```go
+// parser/parser_test.go
+
+func TestBooleanExpression(t *testing.T) {
+	tests := []struct {
+		input           string
+		expectedBoolean bool
+	}{
+		{"true;", true},
+		{"false;", false},
+	}
+
+	for _, tt := range tests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		if len(program.Statements) != 1 {
+			t.Fatalf("program has not enough statements. got=%d",
+				len(program.Statements))
+		}
+
+		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+		if !ok {
+			t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+				program.Statements[0])
+		}
+
+		boolean, ok := stmt.Expression.(*ast.Boolean)
+		if !ok {
+			t.Fatalf("exp not *ast.Boolean. got=%T", stmt.Expression)
+		}
+		if boolean.Value != tt.expectedBoolean {
+			t.Errorf("boolean.Value not %t. got=%t", tt.expectedBoolean,
+				boolean.Value)
+		}
+	}
+}
+```
+
+```
+
+=== RUN   TestBooleanExpression
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+        END parseExpression
+END parseExpressionStatement
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:310: parser has 1 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:312: parser error: "no prefix parse function for TRUE found"
+--- FAIL: TestBooleanExpression (0.00s)
+FAIL
+FAIL    Monkey/parser   0.096s
+```
+
+token.TRUEとtoken.FALSEのためのprefixParseFnを登録する必要がある。
+```go
+	p.prefixParseFns = make(map[token.TokenType]prefixParseFn)
+	p.registerPrefix(token.IDENT, p.parseIdentifier)
+	p.registerPrefix(token.INT, p.parseIntegerLiteral)
+	p.registerPrefix(token.BANG, p.parsePrefixExpression)
+	p.registerPrefix(token.MINUS, p.parsePrefixExpression)
+	p.registerPrefix(token.TRUE, p.parseBoolean)
+	p.registerPrefix(token.FALSE, p.parseBoolean)
+
+func (p *Parser) parseBoolean() ast.Expression {
+	return &ast.Boolean{Token: p.curToken, Value: p.curTokenIs(token.TRUE)}
+}
+
+```
+
+```
+=== RUN   TestBooleanExpression
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+        END parseExpression
+END parseExpressionStatement
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+        END parseExpression
+END parseExpressionStatement
+--- PASS: TestBooleanExpression (0.00s)
+PASS
+ok      Monkey/parser   0.346s
+
+```
+これでおしまい。だがテストを拡張していける。
+```go
+// parser/parsr_test.go
+func testBooleanLiteral(t *testing.T, exp ast.Expression, value bool) bool {
+	bo, ok := exp.(*ast.Boolean)
+	if !ok {
+		t.Errorf("exp not *ast.Boolean. got=%T", exp)
+		return false
+	}
+
+	if bo.Value != value {
+		t.Errorf("bo.Value not %t. got=%t", value, bo.Value)
+		return false
+	}
+
+	if bo.TokenLiteral() != fmt.Sprintf("%t", value) {
+		t.Errorf("bo.TokenLiteral not %t. got=%s",
+			value, bo.TokenLiteral())
+		return false
+	}
+
+	return true
+}
+
+func testLiteralExpression(
+	t *testing.T,
+	exp ast.Expression,
+	expected interface{},
+) bool {
+	switch v := expected.(type) {
+	case int:
+		return testIntegerLiteral(t, exp, int64(v))
+	case int64:
+		return testIntegerLiteral(t, exp, v)
+	case string:
+		return testIdentifier(t, exp, v)
+	case bool:
+		return testBooleanLiteral(t, exp, v)
+	}
+	t.Errorf("type of exp not handle. got=%T", exp)
+
+	return false
+}
+
+```
+このようにすると以下のようなテストも可能になる。
+```go
+// parser/parser_test.go
+
+func TestParseInfixExpressions(t *testing.T) {
+	infixTests := []struct {
+		input      string
+		leftValue  interface{}
+		operator   string
+		rightValue interface{}
+	}{
+		{"true == true", true, "==", true},
+		{"true != false", true, "!=", false},
+	}
+
+	for _, tt := range infixTests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		if len(program.Statements) != 1 {
+			t.Fatalf("program.Statements does not contain %d statements. got=%d\n",
+				1, len(program.Statements))
+		}
+
+		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+		if !ok {
+			t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+				program.Statements[0])
+		}
+
+		if !testInfixExpression(t, stmt.Expression, tt.leftValue, tt.operator, tt.rightValue) {
+			return
+		}
+
+	}
+}
+
+```
+```
+=== RUN   TestParseInfixExpressions
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+                BEGIN parseInfixExpression
+                        BEGIN parseExpression
+                        END parseExpression
+                END parseInfixExpression
+        END parseExpression
+END parseExpressionStatement
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+                BEGIN parseInfixExpression
+                        BEGIN parseExpression
+                        END parseExpression
+                END parseInfixExpression
+        END parseExpression
+END parseExpressionStatement
+--- PASS: TestParseInfixExpressions (0.00s)
+PASS
+ok      Monkey/parser   0.281s
+
+```
+
+```go
+// paser/parser_test.go
+
+func TestParsePrefixExpression(t *testing.T) {
+	prefixTests := []struct {
+		input        string
+		operator     string
+		integerValue interface{}
+	}{
+		{"!true;", "!", true},
+		{"!false;", "!", false},
+	}
+
+	for _, tt := range prefixTests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		if len(program.Statements) != 1 {
+			t.Fatalf("program.Statements does not contain %d statements. got=%d\n",
+				1, len(program.Statements))
+		}
+
+		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+		if !ok {
+			t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+				program.Statements[0])
+		}
+
+		exp, ok := stmt.Expression.(*ast.PrefixExpression)
+		if !ok {
+			t.Fatalf("stmt.Expression is not ast.PrefixExpression. got=%T",
+				stmt.Expression)
+		}
+
+		if exp.Operator != tt.operator {
+			t.Fatalf("exp.Operator is not '%s'. got=%s",
+				tt.operator, exp.Operator)
+		}
+	}
+}
+```
+
+```
+=== RUN   TestParsePrefixExpression
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+                BEGIN parsePrefixExpression
+                        BEGIN parseExpression
+                        END parseExpression
+                END parsePrefixExpression
+        END parseExpression
+END parseExpressionStatement
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+                BEGIN parsePrefixExpression
+                        BEGIN parseExpression
+                        END parseExpression
+                END parsePrefixExpression
+        END parseExpression
+END parseExpressionStatement
+--- PASS: TestParsePrefixExpression (0.00s)
+PASS
+ok      Monkey/parser   0.466s
+
+```
+
+p91
+---
+
+### グループ化された式
+
+丸括弧を使って式をグループ化させその優先順位に影響を与えることができる。
+
+```(5 * 5) * 2```
+
+ASTノードタイプで表現されるのもではないので、グループ化された式をこうぬん解析できるようにするためにはASTを変更する必要はない。
+
+グループ化が引き起こす影響を確かめる。
+
+```go
+// parsar/prser_test.go
+
+func TestOperatorPrecedenceParsing(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			"-1 * (2 + 3)",
+			"((-1) * (2 + 3))",
+		},
+	}
+
+...
+
+```
+```
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:286: parser has 2 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:288: parser error: "no prefix parse function for ( found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:288: parser error: "no prefix parse function for ) found"
+--- FAIL: TestOperatorPrecedenceParsing (0.00s)
+FAIL
+FAIL    Monkey/parser   0.278s
+```
+
+これらのテストが通るようにするには次を追加するだけでいい。
+
+```go
+// parser/parser.go
+
+
+```
