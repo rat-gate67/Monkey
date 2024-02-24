@@ -2843,6 +2843,416 @@ FAIL    Monkey/parser   0.278s
 
 ```go
 // parser/parser.go
+func New(l *lexer.Lexer) *Parser {
+	...
+	p.registerPrefix(token.LPAREN, p.parseGroundExpression)
+	...
+}
+
+func (p *Parser) parseGroundExpression() ast.Expression {
+	p.nextToken()
+
+	exp := p.parseExpression(LOWEST)
+
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+
+	return exp
+}
 
 
 ```
+```
+=== RUN   TestOperatorPrecedenceParsing
+BEGIN parseExpressionStatement
+        BEGIN parseExpression
+                BEGIN parsePrefixExpression
+                        BEGIN parseExpression
+                                BEGIN parseIntegerLiteral
+                                END parseIntegerLiteral
+                        END parseExpression
+                END parsePrefixExpression
+                BEGIN parseInfixExpression
+                        BEGIN parseExpression
+                                BEGIN parseExpression
+                                        BEGIN parseIntegerLiteral
+                                        END parseIntegerLiteral
+                                        BEGIN parseInfixExpression
+                                                BEGIN parseExpression
+                                                        BEGIN parseIntegerLiteral
+                                                        END parseIntegerLiteral
+                                                END parseExpression
+                                        END parseInfixExpression
+                                END parseExpression
+                        END parseExpression
+                END parseInfixExpression
+        END parseExpression
+END parseExpressionStatement
+--- PASS: TestOperatorPrecedenceParsing (0.00s)
+PASS
+ok      Monkey/parser   0.313s
+```
+```-1 * (2 + 3 );```
+が解析できるようになった。
+
+### if式
+
+if-elseの構造は以下に示す。
+
+```
+if (<condition>) <consequence> else <alternatice>
+```
+
+ast.IfExpressionASTノードの定義は次のとおり。
+
+```go
+// ast/ast.go
+
+
+type IfExpression struct {
+	Token		token.Token
+	Condition	Expression
+	Consequence	*BlockStatement
+	Alternative	*BlockStatement
+}
+
+func (ie *IfExpression) expressionNode()		{}
+func (ie *IfExpression) TokenLiteral() string	{ return ie.Token.Literal }
+func (ie *IfExpression) String() string {
+	var out bytes.Buffer
+
+	out.WriteString("if")
+	out.WriteString(ie.Condition.String())
+	out.WriteString(" ")
+	out.WriteString(ie.Consequence.String())
+
+	if ie.Alternative != nil {
+		out.WriteString("else ")
+		out.WriteString(ie.Alternative.String())
+	}
+
+	return out.String()
+}
+
+type BlockStatement struct {
+	Token		token.Token
+	Statements	[]Statement
+}
+
+func (bs *BlockStatement) statementNode()		{}
+func (bs *BlockStatement) TokenLiteral() string	{ return bs.Token.Literal }
+func (bs *BlockStatement) String() string {
+	var out bytes.Buffer
+
+	for _, s := range bs.Statements {
+		out.WriteString(s.String())
+	}
+
+	return out.String()
+}
+
+```
+
+テストを書く。ここではelseがあるパターンないパターンの２種類をかく。
+```go
+// parser/parser_test.go
+
+func TestIfExpression(t *testing.T) {
+	input := "if (x < y) { x }"
+
+	l := lexer.New(input)
+	p := New(l)
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program.Statements does not contain %d statements. got=%d\n", 
+			1, len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+
+	if !ok {
+		t.Fatalf("program[0] is not ast.ExpressionStatement. got=%T",
+			program.Statements[0])
+	}
+
+	exp, ok := stmt.Expression.(*ast.IfExpression)
+	if !ok {
+		t.Fatalf("stmt.Expression is not *ast.IfExpression. got=%T",
+			stmt.Expression)	
+	}
+
+	if !testInfixExpression(t, exp.Condition, "x", "<", "y") {
+		return 
+	}
+
+	if len(exp.Consequence.Statements) != 1 {
+		t.Fatalf("consequence is not 1 statements. got=%d\n", 
+			len(exp.Consequence.Statements))
+	}
+
+	consequence, ok := exp.Consequence.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("Statements[0] is not ast.ExpressionStatement. ogt=%T",
+			exp.Consequence.Statements[0])
+	}
+
+	if !testIdentifier(t, consequence.Expression, "x") {
+		return
+	}
+
+}
+
+func TestIfElseExpression(t *testing.T) {
+	input := `if (x < y) { x } else { y }`
+
+	l := lexer.New(input)
+	p := New(l)
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program.Statements does not contain %d statements. got=%d\n",
+			1, len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+			program.Statements[0])
+	}
+
+	exp, ok := stmt.Expression.(*ast.IfExpression)
+	if !ok {
+		t.Fatalf("stmt.Expression is not ast.IfExpression. got=%T", stmt.Expression)
+	}
+
+	if !testInfixExpression(t, exp.Condition, "x", "<", "y") {
+		return
+	}
+
+	if len(exp.Consequence.Statements) != 1 {
+		t.Errorf("consequence is not 1 statements. got=%d\n",
+			len(exp.Consequence.Statements))
+	}
+
+	consequence, ok := exp.Consequence.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("Statements[0] is not ast.ExpressionStatement. got=%T",
+			exp.Consequence.Statements[0])
+	}
+
+	if !testIdentifier(t, consequence.Expression, "x") {
+		return
+	}
+
+	if len(exp.Alternative.Statements) != 1 {
+		t.Errorf("exp.Alternative.Statements does not contain 1 statements. got=%d\n",
+			len(exp.Alternative.Statements))
+	}
+
+	alternative, ok := exp.Alternative.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("Statements[0] is not ast.ExpressionStatement. got=%T",
+			exp.Alternative.Statements[0])
+	}
+
+	if !testIdentifier(t, alternative.Expression, "y") {
+		return
+	}
+}
+```
+
+
+```
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:392: parser has 3 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for IF found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for { found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for } found"
+--- FAIL: TestIfExpression (0.00s)
+FAIL
+FAIL    Monkey/parser   0.288s
+```
+---
+```
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:392: parser has 6 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for IF found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for { found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for } found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for ELSE found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for { found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for } found"
+--- FAIL: TestIfElseExpression (0.00s)
+FAIL
+FAIL    Monkey/parser   0.122s
+```
+
+まず最初の方から取り扱う。prefixが登録されていないので登録する。
+
+```go
+// parser/parser.go
+
+...
+	p.registerPrefix(token.IF, p.parseIfExpression)
+...
+
+func (p *Parser) parseIfExpression() ast.Expression {
+	expression := &ast.IfExpression{Token: p.curToken} 
+
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+
+	p.nextToken()
+	expression.Condition = p.parseExpression(LOWEST)
+
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+
+	if !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+
+	expression.Consequence = p.parseBlockStatement()
+
+	return expression
+
+}
+
+
+```
+
+ifの後には「(」が来なければいけないのでnextTokenで一つトークンを進めている。
+
+
+parseBlockStatementは以下のようになる。
+
+
+```go
+// parser/parsar.go
+
+func (p *Parser) parseBlockStatement() *ast.BlockStatement {
+	block := &ast.BlockStatement{Token: p.curToken}
+	block.Statements = []ast.Statement{}
+
+	p.nextToken()
+	for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
+		stmt := p.parseStatement()
+		if stmt != nil {
+			block.Statements = append(block.Statements, stmt)
+		}
+		p.nextToken()
+	}
+
+	return block
+}
+
+```
+
+```
+--- PASS: TestIfExpression (0.00s)
+PASS
+ok      Monkey/parser   0.346s
+
+```
+テストは合格する。elseありは以下のようになる。
+
+```
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:392: parser has 3 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for ELSE found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for { found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:394: parser error: "no prefix parse function for } found"
+--- FAIL: TestIfElseExpression (0.00s)
+FAIL
+FAIL    Monkey/parser   0.109s
+
+```
+
+条件分岐を追加する。
+
+```go
+func (p *Parser) parseIfExpression() ast.Expression {
+...
+	expression.Consequence = p.parseBlockStatement()
+
+	if p.peekTokenIs(token.ELSE) {
+		p.nextToken()
+
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+
+		expression.Alternative = p.parseBlockStatement()
+	}
+
+	return expression
+
+}
+```
+
+```
+--- PASS: TestIfElseExpression (0.00s)
+PASS
+ok      Monkey/parser   0.280s
+```
+
+うまく行った。
+
+### 関数リテラル
+
+関数リテラルは次のようなもの。
+
+```
+fn(x, y) {
+	return x + y
+}
+```
+
+構造を抽象化すると
+
+```
+if <parmeters> <blockstatement>
+```
+
+parametersは複数の式をコンマを使って区切ったものになり、1個も指定しないこともあり得る。
+
+関数リテラルのASTノードを作成する。
+```go
+// ast/ast.go
+
+import (
+	"stirngs"
+)
+
+
+
+type FunctionLiteral struct {
+	Token		token.Token
+	Parameters	[]*Identifier
+	Body		*BlockStatement
+}
+
+func (fl *FunctionLiteral) expressionNode()			{}
+func (fl *FunctionLiteral) TokenLiteral() string	{return fl.Token.Literal }
+func (fl *FunctionLiteral) String() string {
+	var out bytes.Buffer
+
+	params := []string{}
+	for _, p := range fl.Parameters {
+		params = append(params, p.String())
+	}
+
+	out.WriteString(fl.TokenLiteral())
+	out.WriteString("(")
+	out.WriteString(strings.Join(params, ", "))
+	out.WriteString(")")
+	out.WriteString(fl.Body.String())
+
+	return out.String()
+}
+```
+
+parametersフィールドは*ast.Identifierのスライス。テストは次のとおり。
