@@ -2800,8 +2800,6 @@ ok      Monkey/parser   0.466s
 
 ```
 
-p91
----
 
 ### グループ化された式
 
@@ -3217,7 +3215,7 @@ fn(x, y) {
 if <parmeters> <blockstatement>
 ```
 
-parametersは複数の式をコンマを使って区切ったものになり、1個も指定しないこともあり得る。
+parametersは複数の識別子をコンマを使って区切ったものになり、1個も指定しないこともあり得る。
 
 関数リテラルのASTノードを作成する。
 ```go
@@ -3256,3 +3254,204 @@ func (fl *FunctionLiteral) String() string {
 ```
 
 parametersフィールドは*ast.Identifierのスライス。テストは次のとおり。
+```go
+// parser/parser_test.go
+
+func TestFunctionLiteralParsing(t *testing.T) {
+	input := `fn(x, y) { x + y; }`
+
+	l := lexer.New(input)
+	p := New(l)
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program.Statements does not contain %d statements. got=%d\n",
+			1, len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+			program.Statements[0])
+	}
+
+	function, ok := stmt.Expression.(*ast.FunctionLiteral)
+	if !ok {
+		t.Fatalf("stmt.Expression is not ast.FunctionLiteral. got=%T",
+			stmt.Expression)
+	}
+
+	if len(function.Parameters) != 2 {
+		t.Fatalf("function literal parameters wrong. want 2, got=%d\n",
+			len(function.Parameters))
+	}
+
+	testLiteralExpression(t, function.Parameters[0], "x")
+	testLiteralExpression(t, function.Parameters[1], "y")
+
+	if len(function.Body.Statements) != 1 {
+		t.Fatalf("function.Body.Statements has not 1 statements. got=%d\n",
+			len(function.Body.Statements))
+	}
+
+	bodyStmt, ok := function.Body.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("function body stmt is not ast.ExpressionStatement. got=%T",
+			function.Body.Statements[0])
+	}
+
+	testInfixExpression(t, bodyStmt.Expression, "x", "+", "y")
+}
+
+func TestFunctionParameterParsing(t *testing.T) {
+	tests := []struct {
+		input          string
+		expectedParams []string
+	}{
+		{input: "fn() {};", expectedParams: []string{}},
+		{input: "fn(x) {};", expectedParams: []string{"x"}},
+		{input: "fn(x, y, z) {};", expectedParams: []string{"x", "y", "z"}},
+	}
+
+	for _, tt := range tests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		stmt := program.Statements[0].(*ast.ExpressionStatement)
+		function := stmt.Expression.(*ast.FunctionLiteral)
+
+		if len(function.Parameters) != len(tt.expectedParams) {
+			t.Errorf("length parameters wrong. want %d, got=%d\n",
+				len(tt.expectedParams), len(function.Parameters))
+		}
+
+		for i, ident := range tt.expectedParams {
+			testLiteralExpression(t, function.Parameters[i], ident)
+		}
+	}
+}
+
+```
+
+```
+END parseExpressionStatement
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:469: parser has 6 errors
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:471: parser error: "no prefix parse function for FUNCTION found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:471: parser error: "expected next token to be ), got , instead"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:471: parser error: "no prefix parse function for , found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:471: parser error: "no prefix parse function for ) found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:471: parser error: "no prefix parse function for { found"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/parser/parse_test.go:471: parser error: "no prefix parse function for } found"
+--- FAIL: TestFunctionLiteralParsing (0.00s)
+FAIL
+FAIL    Monkey/parser   0.353s
+```
+
+prefixParseFnに登録する。
+
+```go
+// parser/parser.go
+...
+	p.registerPrefix(token.FUNCTION, p.parseFunctionLiteral)
+...
+
+
+func (p *Parser) parseFunctionLiteral() ast.Expression {
+	lit := &ast.FunctionLiteral{Token: p.curToken}
+
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+
+	lit.Parameters = p.parseFunctionParameters()
+
+		if !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+
+
+	lit.Body = p.parseBlockStatement()
+
+	return lit
+}
+
+func (p *Parser) parseFunctionParameters() []*ast.Identifier {
+	identifiers := []*ast.Identifier{}
+
+	if p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		return identifiers
+	}
+
+	p.nextToken()
+
+	ident := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+	identifiers = append(identifiers, ident)
+
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken()
+		p.nextToken()
+		ident := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		identifiers = append(identifiers, ident)
+	}
+
+	if !p.expectTokenIs(token.RPAREN) {
+		return nil
+	}
+
+	return identifiers
+
+}
+
+```
+
+```
+--- PASS: TestFunctionLiteralParsing (0.00s)
+PASS
+ok      Monkey/parser   (cached)
+```
+
+パラメータが色々な種類の時もテストする。
+
+```go
+// parser/parser_test.go
+
+func TestFunctionParameterParsing(t *testing.T) {
+	tests := []struct {
+		input          string
+		expectedParams []string
+	}{
+		{input: "fn() {};", expectedParams: []string{}},
+		{input: "fn(x) {};", expectedParams: []string{"x"}},
+		{input: "fn(x, y, z) {};", expectedParams: []string{"x", "y", "z"}},
+	}
+
+	for _, tt := range tests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		stmt := program.Statements[0].(*ast.ExpressionStatement)
+		function := stmt.Expression.(*ast.FunctionLiteral)
+
+		if len(function.Parameters) != len(tt.expectedParams) {
+			t.Errorf("length parameters wrong. want %d, got=%d\n",
+				len(tt.expectedParams), len(function.Parameters))
+		}
+
+		for i, ident := range tt.expectedParams {
+			testLiteralExpression(t, function.Parameters[i], ident)
+		}
+	}
+}
+```
+```
+--- PASS: TestFunctionParameterParsing (0.00s)
+PASS
+ok      Monkey/parser   0.112s
+
+```
