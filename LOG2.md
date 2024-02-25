@@ -127,3 +127,114 @@ func (n *Null) Type() ObjectType { return NULL_OBJ }
 func (n *Null) Inspect() string  { return "null" }
 
 ```
+
+なんの値もラップしていない。これは値の不存在を表現している。
+
+## 式の評価
+
+eval関数を書いていく。
+
+まずは「5を入力したら5を返す」とか「trueを入力したらtrueを返す」といった簡単なものたち。
+
+### 整数リテラル
+
+「5を入力したら5を返す」は一体何を意味しているのだろうか。
+それは、\*ast.IntegerLiteralが与えられた時、Eval関数は*object.Integerを返す必要があるということである。
+そのValueフィールドはast\*ast.IntegerLiteral.Valueと同じ整数値を含んでいる。
+
+このテストは簡単に書ける。
+
+```go
+// evaluator/evaluator_tes.go
+
+package evaluator
+
+import (
+	"Monkey/lexer"
+	"Monkey/object"
+	"Monkey/parser"
+	"testing"
+)
+
+func TestEvalIntegerExpression(t *testing.T) {
+	tests := []struct {
+		input   string
+		expected int64
+	}{
+		{"5", 5},
+		{"10", 10},
+	}
+
+	for _, tt := range tests {
+		evaluated := testEval(tt.input)
+		testIntegerObject(t, evaluated, tt.expected)
+	}
+}
+
+func testEval(input string) {
+	l := lexer.New(input)
+	p := parser.New(l)
+	program := p.ParseProgram()
+	return Eval(program)
+}
+
+func testIntegerObject(t *testing.T, obj object.Object, expected int64) {
+	result, ok := obj.(*object.Integer)
+	if !ok {
+		t.Errorf("object is not Integer. got=%T (%+v)", obj, obj)
+		return false
+	}
+
+	if result.Value != expected {
+		t.Errorf("object is not Integer. got=%d, want=%d", result.Value, expected)
+		return false
+	}
+
+	return true
+}
+```
+
+
+Eval関数が定義されていないのでエラーになる。
+
+````go
+// evaluator/evaluator.go
+
+package evaluator
+
+import (
+	"Monkey/ast"
+	"Monkey/object"
+)
+
+func Eval(node ast.Node) object.Object {
+	switch node := node.(type) {
+	case *ast.Program:
+		return evalStatements(node.Statements)
+	case *ast.ExpressionStatement:
+		return Eval(node.Expression)
+	case *ast.IntegerLiteral:
+		return &object.Integer{Value: node.Value}
+	}
+
+	return nil
+}
+
+func evalStatements(stmt []ast.Statement) object.Object {
+	var result object.Object
+
+	for _, statement := range stmt {
+		result = Eval(statement)
+	}
+
+	return result
+}
+````
+
+```
+=== RUN   TestEvalIntegerExpression
+--- PASS: TestEvalIntegerExpression (0.00s)
+PASS
+ok      Monkey/evaluator        0.352s
+```
+
