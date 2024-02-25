@@ -3705,10 +3705,124 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 
 	stmt.ReturnValue = p.parseExpression(LOWEST)
 
-	for !p.curTokenIs(token.SEMICOLON) {
+	if p.peekTokenIs(token.SEMICOLON) {
 		p.nextToken()
 	}
 
 	return stmt
 }
 ```
+
+## 読み込み-構文解析-表示-繰り返し
+replを改良する。
+
+```go
+// repl/repl.go
+package repl
+
+import (
+	"Monkey/lexer"
+	"Monkey/parser"
+	"bufio"
+	"fmt"
+	"io"
+)
+
+const PROMPT = ">> "
+
+func Start(in io.Reader, out io.Writer) {
+	scanner := bufio.NewScanner(in)
+
+	for {
+		fmt.Printf(PROMPT)
+		scanned := scanner.Scan()
+		if !scanned {
+			return
+		}
+
+		line := scanner.Text()
+		l := lexer.New(line)
+		p := parser.New(l)
+
+		program := p.ParseProgram()
+		if len(p.Errors()) != 0 {
+			printParserErrors(out, p.Errors())
+			continue
+		}
+
+		io.WriteString(out, program.String())
+		io.WriteString(out, "\n")
+	}
+}
+
+func printParserErrors(out io.Writer, errors []string) {
+	for _, msg := range errors {
+		io.WriteString(out, "\t"+msg+"\n")
+	}
+}
+
+```
+
+```
+Monkey％go run main/main.go
+Hello kubotadaichi! This is the Monkey programming language!
+Feel free to type in commands
+>> let x = 1 + 2
+let x = (1 + 2);
+>> fn(a, b) { let c = a + b; return a+b*c;}
+fn(a, b)let c = (a + b);return (a + (b * c));
+>> let x y z
+        expected next token to be =, got IDENT instead
+>> 
+```
+エラー文をユーザーフレンドな素晴らしいものに変える。
+
+```go
+// repl/repl.go
+...
+const MONKEY_FACE = `            __,__
+   .--.  .-"     "-.  .--.
+  / .. \/  .-. .-.  \/ .. \
+ | |  '|  /   Y   \  |'  | |
+ | \   \  \ 0 | 0 /  /   / |
+  \ '- ,\.-"""""""-./, -' /
+   ''-' /_   ^ ^   _\ '-''
+       |  \._   _./  |
+       \   \ '~' /   /
+        '._ '-=-' _.'
+           '-----'
+`
+
+
+func printParserErrors(out io.Writer, errors []string) {
+
+	for _, msg := range errors {
+		io.WriteString(out, MONKEY_FACE)
+		io.WriteString(out, "Woops! We ran into some monkey business here!\n")
+		io.WriteString(out, " parser errors:\n")
+		io.WriteString(out, "\t"+msg+"\n")
+	}
+}
+
+```
+
+```
+Monkey％go run main/main.go
+Hello kubotadaichi! This is the Monkey programming language!
+Feel free to type in commands
+>> let x y z
+            __,__
+   .--.  .-"     "-.  .--.
+  / .. \/  .-. .-.  \/ .. \
+ | |  '|  /   Y   \  |'  | |
+ | \   \  \ 0 | 0 /  /   / |
+  \ '- ,\.-"""""""-./, -' /
+   ''-' /_   ^ ^   _\ '-''
+       |  \._   _./  |
+       \   \ '~' /   /
+        '._ '-=-' _.'
+           '-----'
+Woops! We ran into some monkey business here!
+ parser errors:
+        expected next token to be =, got IDENT instead
+>> 
