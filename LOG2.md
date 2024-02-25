@@ -238,3 +238,572 @@ PASS
 ok      Monkey/evaluator        0.352s
 ```
 
+### REPLを完成させる
+
+REPL(Read, Evaluate, Print, Loop)を完成させる。
+
+```go
+// repl/repl.go
+
+package repl
+
+import (
+	"Monkey/evaluator"
+	...
+)
+
+const PROMPT = ">> "
+
+func Start(in io.Reader, out io.Writer) {
+	scanner := bufio.NewScanner(in)
+
+	for {
+		fmt.Printf(PROMPT)
+		scanned := scanner.Scan()
+		if !scanned {
+			return
+		}
+
+		line := scanner.Text()
+		l := lexer.New(line)
+		p := parser.New(l)
+
+		program := p.ParseProgram()
+		if len(p.Errors()) != 0 {
+			printParserErrors(out, p.Errors())
+			continue
+		}
+
+		evaluated := evaluator.Eval(program)
+		if evaluated != nil {
+			io.WriteString(out, evaluated.Inspect())
+			io.WriteString(out, "\n")
+		}
+
+		// io.WriteString(out, program.String())
+		// io.WriteString(out, "\n")
+	}
+}
+...
+```
+
+```
+Monkey％go run main/main.go                                                
+Hello kubotadaichi! This is the Monkey programming language!
+Feel free to type in commands
+>> 5
+5
+>> 10
+10
+>> 999
+999
+>> 0
+0
+>>
+ ```
+
+### 真偽値リテラル
+
+真偽値リテラルは整数リテラルと同じように評価するとそれ自身になる。
+テストを書く。
+
+```go
+// evaluator_test.go
+func TestEvalBooleanExpression(t *testing.T) {
+	tests := []struct {
+		input   string
+		expected bool
+	}{
+		{"true", true},
+		{"false", false},
+	}
+
+	for _, tt := range tests {
+		evaluated := testEval(tt.input)
+		testBooleanObject(t, evaluated, tt.expected)
+	}
+}
+
+func testBooleanObject(t *testing.T, obj object.Object, expected bool) bool {
+	result, ok := obj.(*object.Boolean)
+	if !ok {
+		t.Errorf("object is not Boolean. got=%T (%+v)", obj, obj)
+		return false
+	}
+
+	if result.Value != expected {
+		t.Errorf("object has wrong value. got=%t, want=%t",
+			result.Value, expected)
+		return false
+	}
+
+	return true
+}
+
+```
+
+```go
+func Eval...
+
+	case *ast.Boolean:
+		return &object.Boolean{Value: node.Value}
+```
+
+```
+=== RUN   TestEvalBooleanExpression
+--- PASS: TestEvalBooleanExpression (0.00s)
+PASS
+ok      Monkey/evaluator        0.285s
+```
+
+新しい値を生成するのではなくその参照を使うパターンも考える。
+
+
+```go
+// evaluator/evaluator.go
+
+var (
+	TRUE = &object.Boolean{Value: true}
+	FALSE = &object.Boolean{Value: false}
+)
+
+func Eval(node ast.Node) object.Object {
+	switch node := node.(type) {
+	case *ast.Program:
+		return evalStatements(node.Statements)
+	case *ast.ExpressionStatement:
+		return Eval(node.Expression)
+	case *ast.Boolean:
+		// return &object.Boolean{Value: node.Value}
+		return nativeBoolToBooleanObject(node.Value)
+	case *ast.IntegerLiteral:
+		return &object.Integer{Value: node.Value}
+	}
+
+	return nil
+}
+
+func nativeBoolToBooleanObject(input bool) *object.Boolean {
+	if input {
+		return TRUE
+	}
+	return FALSE
+}
+
+```
+
+### null
+
+いちいち新しいobject.Nullを生成することはしない。
+
+```go
+// evaluator/evaluator
+var (
+	Null = &object.Null{}
+	TRUE = &object.Boolean{Value: true}
+	FALSE = &object.Boolean{Value: false}
+)
+
+```
+### 前置式
+
+Monkeyがサポートする前置式は「!」「-」がある。
+
+気をつけて実装する。
+
+それでは「!」演算子の対応を実装する。
+テストはこの演算子がオペランドを真偽値に変換してその否定を返すことを期待している。
+
+```go
+// evaluator_test.go
+
+func TestBangOperator(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"!true", false},
+		{"!false", true},
+		{"!5", false},
+		{"!!true", true},
+		{"!!false", false},
+		{"!!5", true},
+	}
+
+	for _, tt := range tests {
+		evaluated := testEval(tt.input)
+		testBooleanObject(t, evaluated, tt.expected)
+	}
+}
+
+```
+
+Evalはnilを返すためテストは失敗する。
+```go
+// evaluator.go
+
+func Eval(node ast.Node) object.Object {
+...
+	case *ast.PrefixExpression:
+		right := Eval(node.Right)
+		return evalPrefixExpression(node.Operator, right)
+...
+
+
+func evalPrefixExpression(operator string, right object.Object) object.Object {
+	switch operator {
+	case "!":
+		return evalBangOperatorExpression(right)
+	default:
+		return NULL
+	}
+}
+
+func evalBangOperatorExpression(right object.Object) object.Object {
+	switch right {
+	case TRUE:
+		return FALSE
+	case FALSE:
+		return TRUE
+	case NULL:
+		return NULL
+	default:
+		return FALSE
+	}
+}
+```
+
+```
+=== RUN   TestBangOperator
+--- PASS: TestBangOperator (0.00s)
+PASS
+ok      Monkey/evaluator        0.290s
+
+```
+
+続いて「-」を対応する。
+これは「!」の時を拡張して作ることができる。
+
+```go
+// evaluator_test.go
+func TestMinusOperator(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int64
+	}{
+		{"5", 5},
+		{"10", 10},
+		{"-5", -5},
+		{"-10", -10},
+	}
+...
+
+```
+
+```go
+// evaluator.go
+
+func evalPrefixExpression(operator string, right object.Object) object.Object {
+	switch operator {
+	case "!":
+		return evalBangOperatorExpression(right)
+	case "-":
+		return evalMinusPrefixOperatorExpression(right)
+	default:
+		return NULL
+	}
+}
+
+func evalMinusPrefixOperatorExpression(right object.Object) object.Object {
+	if right.Type() != object.INTEGER_OBJ {
+		return NULL
+	}
+	value := right.(*object.Integer).Value
+	return &object.Integer{Value: -value}
+}
+```
+
+```
+=== RUN   TestMinusOperator
+--- PASS: TestMinusOperator (0.00s)
+PASS
+ok      Monkey/evaluator        0.273s
+```
+
+REPLで前置式を試すことができるようになった。
+
+```
+Monkey％go run main/main.go
+Hello kubotadaichi! This is the Monkey programming language!
+Feel free to type in commands
+>> !true
+false
+>> -10
+-10
+>> !44 
+false
+>> !0
+false
+>> !!!false
+true
+>> 
+```
+
+### 中置式
+
+Monkeyがサポートするのは以下の8つの式である。
+
+```
+5 + 5;
+5 - 5;
+5 * 5;
+5 / 5;
+
+5 > 5;
+5 < 5;
+5 >= 5;
+5 <= 5;
+```
+まずは真偽値を生成しない上の４つの式から対応する。
+
+テストはTestEvalIntegerExpressionテスト関数を拡張したものを使用する。
+```go
+// evaluatir_test.go
+
+func TestEvalIntegerExpression(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int64
+	}{
+		{"5", 5},
+		{"10", 10},
+		{"5 + 5 + 5 + 5 - 10", 10},
+		{"3 + 3 - 2 -2 - 1", 1},
+		{"5 * 2", 10},
+		{"12 / 2", 6},
+		{"50 / 2 * 2 + 10 - 5", 55},
+		{"5 * 2 + 10", 20},
+		{"5 + 2 * 10", 25},
+		{"5 * (2 + 10)", 60},
+		{"10-5", 5},
+	}
+...
+
+```
+
+まずEval関数のswtichを拡張するところから始める。
+```go
+// evaluator.go
+
+...
+	case *ast.InfixExpression:
+		left := Eval(node.Left)
+		right := Eval(node.Right)
+		return evalInfixExpression(node.Operator, left, right)
+...
+
+
+func evalInfixExpression(
+	operator string,
+	left, right object.Object,
+) object.Object {
+	switch {
+	case left.Type() == object.INTEGER_OBJ && right.Type() == object.INTEGER_OBJ:
+		return evalIntegerInfixExpression(operator, left, right)
+	default:
+		return NULL
+	}
+}
+
+func evalIntegerInfixExpression(
+	operator string,
+	left, right object.Object,
+) object.Object {
+	leftVal := left.(*object.Integer).Value
+	rightVal := right.(*object.Integer).Value
+
+	switch operator {
+	case "+":
+		return &object.Integer{Value: leftVal + rightVal}
+	case "-":
+		return &object.Integer{Value: leftVal - rightVal}
+	case "*":
+		return &object.Integer{Value: leftVal * rightVal}
+	case "/":
+		return &object.Integer{Value: leftVal / rightVal}
+	default:
+		return NULL
+	}
+}
+```
+
+```
+
+=== RUN   TestEvalIntegerExpression
+--- PASS: TestEvalIntegerExpression (0.00s)
+PASS
+ok      Monkey/evaluator        0.645s
+
+```
+これだけでテストが通る。
+
+続けて真偽値をかえす演算子を追加する。
+
+```go
+// evaluator_test.go
+func TestEvalBooleanExpression(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"true", true},
+		{"false", false},
+		{"1 < 2", true},
+		{"1 > 2", false},
+		{"1 == 1", true},
+		{"1 != 1", true},
+		{"1 == 2", false},
+		{"1 != 2", true},
+	// 	{"true == true", true},
+	// 	{"true != true", false},
+	// 	{"true == false", false},
+	}
+...
+```
+
+数行を追加するだけでテストは通る。
+```go
+// evaluator.go
+
+func evalIntegerInfixExpression(
+	operator string,
+	left, right object.Object,
+) object.Object {
+	leftVal := left.(*object.Integer).Value
+	rightVal := right.(*object.Integer).Value
+
+	switch operator {
+	case "+":
+		return &object.Integer{Value: leftVal + rightVal}
+	case "-":
+		return &object.Integer{Value: leftVal - rightVal}
+	case "*":
+		return &object.Integer{Value: leftVal * rightVal}
+	case "/":
+		return &object.Integer{Value: leftVal / rightVal}
+	case "<":
+		return nativeBoolToBooleanObject(leftVal < rightVal)
+	case ">":
+		return nativeBoolToBooleanObject(leftVal > rightVal)
+	case "==":
+		return nativeBoolToBooleanObject(leftVal == rightVal)
+	case "!=":
+		return nativeBoolToBooleanObject(leftVal != rightVal)
+	default:
+		return NULL
+	}
+}
+```
+
+```
+=== RUN   TestEvalBooleanExpression
+--- PASS: TestEvalBooleanExpression (0.00s)
+PASS
+ok      Monkey/evaluator        0.288s
+````
+
+より真偽値についても演算ができるようにする.
+
+```go
+...
+	{
+		{"true", true},
+		{"false", false},
+		{"1 < 2", true},
+		{"1 > 2", false},
+		{"1 == 1", true},
+		{"1 != 1", false},
+		{"1 == 2", false},
+		{"1 != 2", true},
+		{"true == true", true},
+		{"true != true", false},
+		{"true == false", false},
+		{"(1 > 0) != true", false},
+		{"(1 > 0) == true", true},
+		{"(1 > 0) == false", false},
+		{"(1 > 0) != false", true},
+	}
+...
+```
+
+これはNULLが出て失敗する。
+
+```
+=== RUN   TestEvalBooleanExpression
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:77: object is not Boolean. got=*object.Null (&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:77: object is not Boolean. got=*object.Null (&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:77: object is not Boolean. got=*object.Null (&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:77: object is not Boolean. got=*object.Null (&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:77: object is not Boolean. got=*object.Null (&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:77: object is not Boolean. got=*object.Null (&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:77: object is not Boolean. got=*object.Null (&{})
+--- FAIL: TestEvalBooleanExpression (0.00s)
+FAIL
+FAIL    Monkey/evaluator        0.287s
+
+```
+これは以下のようにすれば直ちにテストが通ってしまう。
+
+```go
+// evaluator.go
+func evalInfixExpression(
+	operator string,
+	left, right object.Object,
+) object.Object {
+	switch {
+	case left.Type() == object.INTEGER_OBJ && right.Type() == object.INTEGER_OBJ:
+		return evalIntegerInfixExpression(operator, left, right)
+	case operator == "==":
+		return nativeBoolToBooleanObject(left == right)
+	case operator == "!=":
+		return nativeBoolToBooleanObject(left != right)
+	default:
+		return NULL
+	}
+}
+```
+
+```
+=== RUN   TestEvalBooleanExpression
+--- PASS: TestEvalBooleanExpression (0.00s)
+PASS
+ok      Monkey/evaluator        0.117s
+```
+一応、電卓が完成した。
+```
+Monkey％go run main/main.go
+Hello kubotadaichi! This is the Monkey programming language!
+Feel free to type in commands
+>> 1 + 0 -1
+0
+>> 100 > 10*10
+false
+>> 700 > (100+40)
+true
+>> (2 > 3 + 2)
+false
+>> true + 1
+null
+>> 2 > 3+2
+false
+>> 2 > 5
+false
+>> 100 * 2 > 500 /100
+true
+```
+
+## 条件分岐
+
+Monkeyでは条件分岐のconsequence部の条件が「truthy」つまりnullでもfalseでもない時に実行される。
+テストを書いていく。
+
