@@ -807,3 +807,99 @@ true
 Monkeyでは条件分岐のconsequence部の条件が「truthy」つまりnullでもfalseでもない時に実行される。
 テストを書いていく。
 
+```go
+// evaluator_test.go
+func TestIfElseExpressions(t *testing.T) {
+	tests := []struct {
+		input    string
+		expect	 interface{}
+	}{
+		{"if (true) { 10 }", 10},
+		{"if (false) { 10 }", nil},
+		{"if (1>2) { 10 } else { 20 }", 20},
+	}
+
+	for _, tt := range tests {
+		evaluated := testEval(tt.input)
+		integer, ok := tt.expect.(int)
+		if ok {
+			testIntegerObject(t, evaluated, int64(integer))
+		} else {
+			testNullObject(t, evaluated)
+		}
+	
+	}
+}
+
+func testNullObject(t *testing.T, obj object.Object) bool {
+	if obj != NULL {
+		t.Errorf("object is not NULL. got=%T (%+v)", obj, obj)
+		return false
+	}
+
+	return true
+}
+
+```
+
+例えば
+```if (false) { 10 }
+```
+は何も値を返さないのでNULLになるという処理もはいっている。
+
+```
+=== RUN   TestIfElseExpressions
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:146: object is not Integer. got=<nil> (<nil>)
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:160: object is not NULL. got=<nil> (<nil>)
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:146: object is not Integer. got=<nil> (<nil>)
+--- FAIL: TestIfElseExpressions (0.00s)
+FAIL
+FAIL    Monkey/evaluator        0.268s
+```
+
+わずかなコードを追加してテストを成功させる。
+
+```go
+// evaluator,go
+
+...
+	case *ast.BlockStatement:
+		return evalStatements(node.Statements)
+	case *ast.IfExpression:
+		return evalIfExpression(node)
+...
+
+func evalIfExpression(ie *ast.IfExpression) object.Object {
+	condition := Eval(ie.Condition)
+
+	if isTruthy(condition) {
+		return Eval(ie.Consequence)
+	}else if ie.Alternative != nil {
+		return Eval(ie.Alternative)
+	} else {
+		return NULL
+	}
+}
+
+func isTruthy(obj object.Object) bool {
+	switch obj {
+	case NULL:
+		return false
+	case TRUE:
+		return true
+	case FALSE:
+		return false
+	default:
+		return true
+	}
+}
+
+```
+
+```
+=== RUN   TestIfElseExpressions
+--- PASS: TestIfElseExpressions (0.00s)
+PASS
+ok      Monkey/evaluator        0.283s
+```
+
