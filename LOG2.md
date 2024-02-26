@@ -1380,3 +1380,213 @@ PASS
 ok      Monkey/evaluator        0.301s
 
 ```
+
+## 束縛と環境
+
+let文を追加して変数束縛を追加する。
+
+```go
+//evaluator_test.go
+func TestLetStatements(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int64
+	}{
+		{"let a = 5; a;", 5},
+		{"let a = 5 * 5; a;", 25},
+		{"let a = 5; let b = a; b;", 5},
+		{"let a = 5; let b = a; let c = a + b + 5; c;", 15},
+	}
+
+	for _, tt := range tests {
+		testIntegerObject(t, testEval(tt.input), tt.expected)
+	}
+}
+
+```
+
+それに識別子が束縛されていない時のエラーも検証する。
+
+```go
+// evaluator.go
+
+func TestErrorHandling(t *testing.T) {
+	tests := []struct {
+		input           string
+		expectedMessage string
+	}{
+...
+				{
+					"foobar",
+					"identifier not found: foobar",
+				},
+	}
+...
+```
+
+まず*ast.LetStatementのためのcase分岐をEvalに作る。
+
+```go
+
+	case *ast.LetStatement:
+		val := Eval(node.Value)
+		if isError(val) {
+			return val
+		}
+		// 何すりゃいいんだこれ
+		
+```
+
+ここで環境が登場。
+環境はね前に関連づけられた値を記録しておくために使われるもので、その本汁は文字列とオブジェクトを関連づけたハッシュマップである。
+
+環境関連のオブジェクトを追加する。
+
+```go
+// object.go
+
+
+func NewEnvironment() *Environment {
+	s := make(map[string]Object)
+	return &Environment{store: s}
+}
+
+type Environment struct {
+	store map[string]Object
+}
+
+func (e *Environment) Get(name string) (Object, bool) {
+	obj, ok := e.store[name]
+	return obj, ok
+}
+
+func (e *Environment) Set(name string, val Object) Object {
+	e.store[name] = val
+	return val
+}
+
+```
+
+全てのEvalの引数にenvを追加する。
+
+REPLの中でもenvを使う。
+
+```go
+// repl.go
+
+	"Monkey/evaluator"
+	"Monkey/lexer"
+	"Monkey/parser"
+	"bufio"
+	"fmt"
+	"io"
+	"Monkey/object"
+)
+
+
+const PROMPT = ">> "
+
+func Start(in io.Reader, out io.Writer) {
+	scanner := bufio.NewScanner(in)
+	env := object.NewEnvironment()
+
+	for {
+		fmt.Printf(PROMPT)
+		scanned := scanner.Scan()
+		if !scanned {
+			return
+		}
+
+		line := scanner.Text()
+		l := lexer.New(line)
+		p := parser.New(l)
+
+		program := p.ParseProgram()
+		if len(p.Errors()) != 0 {
+			printParserErrors(out, p.Errors())
+			continue
+		}
+
+		evaluated := evaluator.Eval(program, env)
+		if evaluated != nil {
+			io.WriteString(out, evaluated.Inspect())
+			io.WriteString(out, "\n")
+		}
+
+		// io.WriteString(out, program.String())
+		// io.WriteString(out, "\n")
+	}
+}
+
+
+```
+
+テストのためにEvalが呼ばれるてびに環境が初期化されるように関数を定義する。
+
+```go
+// evaluator.go
+
+func TestEval(input string) object.Object {
+	l := lexer.New(input)
+	p := parser.New(l)
+	program := p.ParseProgram()
+	env := object.NewEnvironment()
+
+	return Eval(program, env)
+}
+
+```
+
+LeteStatementのcaseに、名前と値を現在の環境に保存する処理を書く。
+```go
+// evaluator.go
+
+case *ast.LetStatement:
+		val := Eval(node.Value, env)
+		if isError(val) {
+			return val
+		}
+		// 何すりゃいいんだこれ
+		env.Set(node.Name.Value, val)
+```
+
+そして識別子を表あする時にはこれらの値を取り出す必要もある。
+
+```go
+// evaluator.go
+	case *ast.Identifier:
+		return evalIdentifier(node, env)
+
+...
+func evalIdentifier(
+	node *ast.Identifier,
+	env *object.Environment,
+) object.Object {
+	val, ok := env.Get(node.Value)
+	if !ok {
+		return newError("identifier not found: " + node.Value)
+	}
+
+	return val
+}
+
+```
+
+```
+Monkey％go test ./evaluator
+ok      Monkey/evaluator        0.306s
+```
+
+```
+Monkey％go run main/main.go                      
+Hello kubotadaichi! This is the Monkey programming language!
+Feel free to type in commands
+>> let a = 100
+>> a
+100
+>> let b = a
+>> b
+100
+>>
+```
+
