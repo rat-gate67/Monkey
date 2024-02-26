@@ -903,3 +903,480 @@ PASS
 ok      Monkey/evaluator        0.283s
 ```
 
+## return文
+
+return文に遭遇するたびに、変えるべき値をあるオブジェクロの内側にラップしておいて追跡する方法を取る。
+
+そのオブジェクトを作成する。
+
+```go
+// object/object.go
+
+
+const (
+	INTEGER_OBJ = "INTEGER"
+	BOOLEAN_OBJ = "BOOLEAN"
+	NULL_OBJ    = "NULL"
+	RETURN_VALUE_OBJ = "RETURN_VALUE"
+)
+
+...
+
+
+type ReturnValue struct {
+	Value Object
+}
+
+func (rv *ReturnValue) Type() ObjectType { return RETURN_VALUE_OBJ }
+func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
+
+```
+
+テストは次のようなものを用意する。
+
+```go
+// evaluator_test.go
+
+func TestReturnStatements(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect int64
+	}{
+		{"return 10;", 10},
+		{"return 10;9;", 10},
+		{"9; return 10; 8;", 10},
+	}
+
+	for _, tt := range tests {
+		evaluated := testEval(tt.input)
+		testIntegerObject(t, evaluated, tt.expect)
+	}
+}
+```
+
+これらのテストを通すようにするには、既存のevalStatement関数を変更し\*ast.ReturnStatementのためのcase分岐をEvalに追加しなければいけない。
+
+```go
+...
+	case *ast.ReturnStatement:
+		val := Eval(node.ReturnValue)
+		return &object.ReturnValue{Value: val}
+...
+
+```
+
+```
+=== RUN   TestReturnStatements
+--- PASS: TestReturnStatements (0.00s)
+PASS
+ok      Monkey/evaluator        0.363s
+```
+
+
+
+evalStatementsはevalProgramStatementsとevalBlockStatementsで一連の文を表現するのに使う。
+しかし以下のようなテストでは問題がある。
+
+```go
+// evaluator_test.go
+
+func TestReturnStatements(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect int64
+	}{
+		{`
+		if (10 > 1) {
+			if (10 > 1) {
+				return 10;
+			}
+		}
+
+		return 1;
+		`, 10},
+	}
+
+	for _, tt := range tests {
+		evaluated := testEval(tt.input)
+		testIntegerObject(t, evaluated, tt.expect)
+	}
+}
+
+```
+
+```
+=== RUN   TestReturnStatements
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:173: object is not Integer. got=1, want=10
+--- FAIL: TestReturnStatements (0.00s)
+FAIL
+FAIL    Monkey/evaluator        0.269s
+```
+
+以下のような修正を加える。
+
+```go
+// evaluator.go
+
+func Eval(node ast.Node) object.Object {
+	switch node := node.(type) {
+	case *ast.Program:
+		return evalProgram(node.Statements)
+...
+	case *ast.BlockStatement:
+		return evalBlockStatement(node)
+...
+func evalProgram(program *ast.Program) object.Object {
+	var result object.Object
+
+	for _, statement := range program.Statements {
+		result = Eval(statement)
+
+		if returnValue, ok := result.(*object.ReturnValue); ok {
+			return returnValue.Value;
+		}
+	}
+
+	return result
+}
+
+func evalBlockStatement(block *ast.BlockStatement) object.Object {
+	var result
+
+	for _, statement := range block.Statements {
+		result = Eval(statement)
+
+		if result != nil && result.Type() == object.RETURN_VALUE_OBJ {
+			return result
+		}
+	}
+
+	return result
+}
+```
+
+```
+=== RUN   TestReturnStatements
+--- PASS: TestReturnStatements (0.00s)
+PASS
+ok      Monkey/evaluator        0.283s
+```
+
+## エラー処理
+
+エラオブジェクトを作成する。
+
+
+```go
+// objext.go
+const (
+	INTEGER_OBJ      = "INTEGER"
+	BOOLEAN_OBJ      = "BOOLEAN"
+	NULL_OBJ         = "NULL"
+	RETURN_VALUE_OBJ = "RETURN_VALUE"
+	ERROR_OBJ		= "ERROR"
+)
+
+type Error struct {
+	Message string
+}
+
+func (e *Error) Type() ObjectType { return ERROR_OBJ }
+func (e *Error) Inspect() string  { return "ERROR: " + e.Message }
+```
+
+テストを用意する。
+
+```go
+// evlutor_test.go
+
+
+func TestErrorHandling(t *testing.T) {
+	tests := []struct {
+		input           string
+		expectedMessage string
+	}{
+		{
+			"5 + true;",
+			"type mismatch: INTEGER + BOOLEAN",
+		},
+		{
+			"5 + true; 5;",
+			"type mismatch: INTEGER + BOOLEAN",
+		},
+		{
+			"-true",
+			"unknown operator: -BOOLEAN",
+		},
+		{
+			"true + false;",
+			"unknown operator: BOOLEAN + BOOLEAN",
+		},
+		{
+			"true + false + true + false;",
+			"unknown operator: BOOLEAN + BOOLEAN",
+		},
+		{
+			"5; true + false; 5",
+			"unknown operator: BOOLEAN + BOOLEAN",
+		},
+		{
+			"if (10 > 1) { true + false; }",
+			"unknown operator: BOOLEAN + BOOLEAN",
+		},
+// 		{
+// 			`
+// if (10 > 1) {
+//   if (10 > 1) {
+//     return true + false;
+//   }
+
+//   return 1;
+// }
+// `,
+// 			"unknown operator: BOOLEAN + BOOLEAN",
+// 		},
+// 		{
+// 			"foobar",
+// 			"identifier not found: foobar",
+// 		},
+	}
+
+	for _, tt := range tests {
+		evaluated := testEval(tt.input)
+
+		errObj, ok := evaluated.(*object.Error)
+		if !ok {
+			t.Errorf("no error object returned. got=%T(%+v)",
+				evaluated, evaluated)
+			continue
+		}
+
+		if errObj.Message != tt.expectedMessage {
+			t.Errorf("wrong error message. expected=%q, got=%q",
+				tt.expectedMessage, errObj.Message)
+		}
+	}
+}
+
+```
+```
+=== RUN   TestErrorHandling
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:245: no error object returned. got=*object.Null(&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:245: no error object returned. got=*object.Integer(&{Value:5})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:245: no error object returned. got=*object.Null(&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:245: no error object returned. got=*object.Null(&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:245: no error object returned. got=*object.Null(&{})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:245: no error object returned. got=*object.Integer(&{Value:5})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:245: no error object returned. got=*object.Null(&{})
+--- FAIL: TestErrorHandling (0.00s)
+FAIL
+FAIL    Monkey/evaluator        0.293s
+
+
+```
+
+ところどころにあるIntegerは演算途中でエラーが発生しているということになっている。
+エラーを作成してEvalで実行するためにヘルパー関数を用意して返す。
+
+```go
+// evaluator.go
+
+import (
+	"Monkey/ast"
+	"Monkey/object"
+	"fmt"
+)
+...
+func newError(format string, a ...interface{}) *object.Error {
+	return &object.Error{Message: fmt.Sprintf(format, a...)}
+}
+
+```
+
+このnewエラー関数はこれまでどうするべきかわからずNULLを返していたすべての箇所でその代わりに使える.
+```go
+// evaluator.go
+
+
+func evalInfixExpression(
+	operator string,
+	left, right object.Object,
+) object.Object {
+	switch {
+...
+	case left.Type() != right.Type():
+		return newError("type mismatch; %s %s %s",
+			left.Type(), operator, right.Type())
+	default:
+		return newError("unknown operator: %s %s %s",
+left.Type(), operator, right.Type())
+
+
+
+
+func evalIntegerInfixExpression(
+	operator string,
+	left, right object.Object,
+) object.Object {
+	leftVal := left.(*object.Integer).Value
+	rightVal := right.(*object.Integer).Value
+
+	switch operator {
+...
+	default:
+		return newError("unknow operator: %s %s %s",
+			left.Type(), operator, right.Type())
+	}
+}
+
+
+func evalPrefixExpression(operator string, right object.Object) object.Object {
+	switch operator {
+	case "!":
+		return evalBangOperatorExpression(right)
+	case "-":
+		return evalMinusPrefixOperatorExpression(right)
+	default:
+		return newError("unknown operator: %s %s",operator, right.Type())
+	}
+}
+
+
+func evalMinusPrefixOperatorExpression(right object.Object) object.Object {
+	if right.Type() != object.INTEGER_OBJ {
+		return newError("unknown operator: -%s", right.Type())
+	}
+
+...
+
+```
+
+```
+
+=== RUN   TestErrorHandling
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:246: no error object returned. got=*object.Integer(&{Value:5})
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:252: wrong error message. expected="unknown operator: BOOLEAN + BOOLEAN", got="type mismatch: ERROR + BOOLEAN"
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:246: no error object returned. got=*object.Integer(&{Value:5})
+--- FAIL: TestErrorHandling (0.00s)
+FAIL
+FAIL    Monkey/evaluator        0.113s
+```
+
+これらはまだエラーで処理が停止していないことを示している。evalProgramとevalBloackStatementにエラー処理を追加する。
+
+```go
+// evaluator.go
+
+func evalProgram(program *ast.Program) object.Object {
+	var result object.Object
+
+	for _, statement := range program.Statements {
+		result = Eval(statement)
+
+		switch result := result.(type) {
+		case *object.ReturnValue:
+			return result.Value
+		case *object.Error:
+			return result
+		}
+	}
+
+	return result
+}
+
+
+func evalBlockStatement(block *ast.BlockStatement) object.Object {
+	var result object.Object
+
+	for _, statement := range block.Statements {
+		result = Eval(statement)
+
+		if result != nil {
+			rt := result.Type()
+			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+				return result
+			}
+		}
+	}
+
+	return result
+}
+
+```
+å
+```
+=== RUN   TestErrorHandling
+    /Users/kubotadaichi/Desktop/PLP/Monkey/evaluator/evaluator_test.go:252: wrong error message. expected="unknown operator: BOOLEAN + BOOLEAN", got="type mismatch: ERROR + BOOLEAN"
+--- FAIL: TestErrorHandling (0.00s)
+FAIL
+FAIL    Monkey/evaluator        0.292s
+
+
+```
+
+最後にもう一つ。Evalの中でEvalを呼び出す際には常にエラーをチェックしてなければならない。
+
+```go
+
+func Eval(node ast.Node) object.Object {
+	switch node := node.(type) {
+	case *ast.Program:
+		return evalProgram(node)
+	case *ast.ExpressionStatement:
+		return Eval(node.Expression)
+	case *ast.PrefixExpression:
+		right := Eval(node.Right)
+		if isError(right) {
+			return right
+		}
+		return evalPrefixExpression(node.Operator, right)
+	case *ast.Boolean:
+		// return &object.Boolean{Value: node.Value}
+		return nativeBoolToBooleanObject(node.Value)
+	case *ast.InfixExpression:
+		left := Eval(node.Left)
+		if isError(left) {
+			return left
+		}
+		right := Eval(node.Right)
+		if isError(right) {
+			return right
+		}
+		return evalInfixExpression(node.Operator, left, right)
+	case *ast.BlockStatement:
+		return evalBlockStatement(node)
+	case *ast.IfExpression:
+		return evalIfExpression(node)
+	case *ast.ReturnStatement:
+		val := Eval(node.ReturnValue)
+		if isError(val) {
+			return val
+		}
+		return &object.ReturnValue{Value: val}
+	case *ast.IntegerLiteral:
+		return &object.Integer{Value: node.Value}
+	}
+
+	return nil
+}
+
+
+func evalIfExpression(ie *ast.IfExpression) object.Object {
+	condition := Eval(ie.Condition)
+
+	if isError(condition) {
+		return condition
+	}
+	
+...
+}
+```
+
+```
+
+=== RUN   TestErrorHandling
+--- PASS: TestErrorHandling (0.00s)
+PASS
+ok      Monkey/evaluator        0.301s
+
+```
